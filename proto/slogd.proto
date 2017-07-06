@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package slogd;
+
+import "google/api/annotations.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_package = "slog.proto";
+option java_multiple_files = true;
+option java_generate_equals_and_hash = true;
+
+option go_package = "proto";
+
+
+message LogEntry {
+    uint64 offset = 1;
+    google.protobuf.Timestamp timestamp = 2;
+
+    oneof entry {
+        google.protobuf.Any protobuf = 3;
+        bytes raw_bytes = 4;
+    }
+}
+
+enum Status {
+    UNSPECIFIED = 0;
+    OK = 1;
+    ERROR = 2;
+}
+
+message AppendRequest {
+    string topic = 1;
+    repeated LogEntry logs = 2;
+}
+
+message AppendResponse {
+    Status status = 1;
+    repeated uint64 offsets = 2;
+}
+
+message GetLogsRequest {
+    string topic = 1;
+
+    enum Position {
+        UNSPECIFIED = 0;
+        EARLIEST = 1;
+        LATEST = 2;
+    }
+
+    oneof start_at {
+        // must be >= 0
+        uint64 offset = 2;
+
+        // or by timestamp
+        google.protobuf.Timestamp timestamp = 3;
+
+        // or a "special position", e.g. earliest/latest
+        Position position = 4;
+    }
+
+    // number of messages to retrieve in a single request
+    // ignored during stream ops
+    int32 max_messages = 6;
+}
+
+message GetLogsResponse {
+    repeated LogEntry logs = 2;
+}
+
+service StructuredLog {
+    rpc AppendLogs(AppendRequest) returns (AppendResponse) {
+        option (google.api.http) = {
+            post: '/log/{topic}'
+            body: '*'
+        };
+    };
+    rpc GetLogs(GetLogsRequest) returns (GetLogsResponse) {
+        option (google.api.http) = {
+            get: '/log/{topic}'
+        };
+    };
+    rpc StreamLogs(GetLogsRequest) returns (stream GetLogsResponse);
+
+    // rpc ListTopics(ListTopicsRequest) return (ListTopicsResponse);
+    // rpc CreateTopic(CreateTopicRequest) return (CreateTopicResponse);
+    // rpc DeleteTopic(DeleteTopicRequest) return (DeleteTopicResponse);
+    // rpc ModifyTopic(ModifyTopicRequest) return (ModifyTopicResponse);
+}
