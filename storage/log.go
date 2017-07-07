@@ -3,6 +3,8 @@ package storage
 import (
 	"bufio"
 	"errors"
+	"fmt"
+	"github.com/xorlev/slogd/internal"
 	pb "github.com/xorlev/slogd/proto"
 	"go.uber.org/zap"
 	"io"
@@ -16,7 +18,7 @@ const (
 	MESSAGE_SIZE_LIMIT = 16 * 1024 * 1024
 )
 
-type LogEntryChannel chan *pb.LogEntry
+type LogEntryChannel chan *internal.TopicAndLog
 
 type Log interface {
 	LogChannel() LogEntryChannel
@@ -128,7 +130,10 @@ func (fl *FileLog) Append(logs []*pb.LogEntry) ([]uint64, error) {
 
 	// Publish to stream
 	for _, log := range logs {
-		fl.messagesWithOffsets <- log
+		fl.messagesWithOffsets <- &internal.TopicAndLog{
+			Topic:    fl.topic,
+			LogEntry: log,
+		}
 	}
 
 	fl.logger.Debug("Done with Append()")

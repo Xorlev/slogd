@@ -80,7 +80,11 @@ service StructuredLog {
             get: '/log/{topic}'
         };
     };
-    rpc StreamLogs(GetLogsRequest) returns (stream GetLogsResponse);
+    rpc StreamLogs(GetLogsRequest) returns (stream GetLogsResponse) {
+    option (google.api.http) = {
+            get: '/log/{topic}/stream'
+        };
+    };
 
     // rpc ListTopics(ListTopicsRequest) return (ListTopicsResponse);
     // rpc CreateTopic(CreateTopicRequest) return (CreateTopicResponse);
