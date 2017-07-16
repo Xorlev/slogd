@@ -158,9 +158,9 @@ func (s *structuredLogServer) addSubscriber(req *pb.GetLogsRequest, clientID uin
 
 func (s *structuredLogServer) removeSubscriber(req *pb.GetLogsRequest, clientID uint64) {
 	s.Lock()
+	close(s.subscribers[req.GetTopic()][clientID])
 	delete(s.subscribers[req.GetTopic()], clientID)
 	s.Unlock()
-
 }
 
 func (s *structuredLogServer) pubsubStub(logChannel storage.LogEntryChannel) {
@@ -169,16 +169,15 @@ func (s *structuredLogServer) pubsubStub(logChannel storage.LogEntryChannel) {
 		for log := range logChannel {
 			s.logger.Infof("Published log: %+v", log)
 
-			// TODO so many locks...
 			s.RLock()
-			val, ok := s.subscribers[log.Topic] // TODO
-			s.RUnlock()
+			val, ok := s.subscribers[log.Topic]
 			if ok {
-				// non-blocking?
+				// non-blocking w/ select?
 				for _, subscriber := range val {
 					subscriber <- log
 				}
 			}
+			s.RUnlock()
 		}
 	}
 }
