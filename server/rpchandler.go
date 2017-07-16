@@ -82,7 +82,6 @@ func (s *structuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 
 	s.logger.Debug("Post-append")
 
-	resp.Status = pb.Status_OK
 	resp.Offsets = offsets
 
 	return resp, nil

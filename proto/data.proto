@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package slogd;
 
-import "google/api/annotations.proto";
 import "google/protobuf/any.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -16,17 +15,12 @@ option go_package = "proto";
 message LogEntry {
     uint64 offset = 1;
     google.protobuf.Timestamp timestamp = 2;
+    map<string, string> annotations = 5;
 
     oneof entry {
         google.protobuf.Any protobuf = 3;
         bytes raw_bytes = 4;
     }
-}
-
-enum Status {
-    UNSPECIFIED = 0;
-    OK = 1;
-    ERROR = 2;
 }
 
 message AppendRequest {
@@ -35,8 +29,7 @@ message AppendRequest {
 }
 
 message AppendResponse {
-    Status status = 1;
-    repeated uint64 offsets = 2;
+    repeated uint64 offsets = 1;
 }
 
 message GetLogsRequest {
@@ -68,26 +61,20 @@ message GetLogsResponse {
     repeated LogEntry logs = 2;
 }
 
-service StructuredLog {
-    rpc AppendLogs(AppendRequest) returns (AppendResponse) {
-        option (google.api.http) = {
-            post: '/log/{topic}'
-            body: '*'
-        };
-    };
-    rpc GetLogs(GetLogsRequest) returns (GetLogsResponse) {
-        option (google.api.http) = {
-            get: '/log/{topic}'
-        };
-    };
-    rpc StreamLogs(GetLogsRequest) returns (stream GetLogsResponse) {
-    option (google.api.http) = {
-            get: '/log/{topic}/stream'
-        };
-    };
+message ListTopicsRequest {}
+message ListTopicsResponse {}
 
-    // rpc ListTopics(ListTopicsRequest) return (ListTopicsResponse);
-    // rpc CreateTopic(CreateTopicRequest) return (CreateTopicResponse);
-    // rpc DeleteTopic(DeleteTopicRequest) return (DeleteTopicResponse);
-    // rpc ModifyTopic(ModifyTopicRequest) return (ModifyTopicResponse);
+message CreateTopicRequest {
+    string topic = 1;
 }
+message CreateTopicResponse {}
+
+message DeleteTopicRequest {
+    string topic = 1;
+}
+message DeleteTopicResponse {}
+
+message ModifyTopicRequest {
+    string topic = 1;
+}
+message ModifyTopicResponse {}

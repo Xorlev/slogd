@@ -6,4 +6,4 @@ protoc \
     -I$GOPATH/src/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis \
     --grpc-gateway_out=logtostderr=true:. \
     --go_out=plugins=grpc:. \
-    slogd.proto
+    data.proto rpc.proto

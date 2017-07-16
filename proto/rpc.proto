@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package slogd;
+
+import "google/api/annotations.proto";
+import "data.proto";
+
+option java_package = "slog.proto";
+option java_multiple_files = true;
+option java_generate_equals_and_hash = true;
+
+option go_package = "proto";
+
+service StructuredLog {
+    rpc AppendLogs(AppendRequest) returns (AppendResponse) {
+        option (google.api.http) = {
+            post: '/topic/{topic}/logs'
+            body: '*'
+        };
+    };
+    rpc GetLogs(GetLogsRequest) returns (GetLogsResponse) {
+        option (google.api.http) = {
+            get: '/topic/{topic}/logs'
+        };
+    };
+    rpc StreamLogs(GetLogsRequest) returns (stream GetLogsResponse) {
+        option (google.api.http) = {
+            get: '/topic/{topic}/logstream'
+        };
+    };
+
+    // rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse) {
+    //     option (google.api.http) = {
+    //         get: '/topics'
+    //     };
+    // };
+    // rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse) {
+    //     option (google.api.http) = {
+    //         post: '/topics',
+    //         body: '*'
+    //     };
+    // };
+    // rpc DeleteTopic(DeleteTopicRequest) returns (DeleteTopicResponse) {
+    //     option (google.api.http) = {
+    //         delete: '/topic/{topic}'
+    //     };
+    // };
+    // rpc ModifyTopic(ModifyTopicRequest) returns (ModifyTopicResponse) {
+    //         option (google.api.http) = {
+    //         put: '/topic/{topic}'
+    //     };
+    // };
+}
