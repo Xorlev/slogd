@@ -1,29 +1,32 @@
 package storage
 
 import (
-	"bufio"
-	"errors"
-	"fmt"
 	"github.com/xorlev/slogd/internal"
 	pb "github.com/xorlev/slogd/proto"
 	"go.uber.org/zap"
-	"io"
+	"golang.org/x/net/context"
 	"io/ioutil"
 	"os"
 	"path"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 )
 
 const (
 	MESSAGE_SIZE_LIMIT = 16 * 1024 * 1024
+	SEGMENT_SIZE_LIMIT = 16 * 1024 * 1024
 )
 
 type LogEntryChannel chan *internal.TopicAndLog
 
 type Log interface {
 	LogChannel() LogEntryChannel
-	Retrieve(*pb.GetLogsRequest) ([]*pb.LogEntry, error)
-	Append([]*pb.LogEntry) ([]uint64, error)
+	Retrieve(context.Context, *LogFilter) ([]*pb.LogEntry, *Continuation, error)
+	ContinueRetrieve(context.Context, *Continuation) ([]*pb.LogEntry, error)
+	Append(context.Context, []*pb.LogEntry) ([]uint64, error)
+	Length() uint64
 }
 
 type FileLog struct {
@@ -35,58 +38,92 @@ type FileLog struct {
 	topic               string
 	messagesWithOffsets LogEntryChannel
 	nextOffset          uint64
+	segments            []logSegment
 	currentSegment      logSegment
 }
 
-type logSegment interface {
-	Retrieve(startOffset uint64, messagesToRead int32) ([]*pb.LogEntry, int, error)
-	Append(*pb.LogEntry) error
-	StartOffset() uint64
-	EndOffset() uint64
-	Flush() error
-	Close() error
+type LogFilter struct {
+	StartOffset uint64
+	MaxMessages uint32
+	// TODO: timestamp
 }
 
-type fileLogSegment struct {
-	logSegment
-
-	logger        *zap.SugaredLogger
-	basePath      string
-	startOffset   uint64
-	endOffset     uint64
-	file          *os.File
-	filePosition  int64 // TODO: ensure reads never go beyond filePosition
-	fileWriter    *bufio.Writer
-	segmentWriter WriteCloser
+type Continuation struct {
+	LastOffsetRead uint64
+	FilePosition   uint64
+	LogFilter      *LogFilter
 }
 
 func (fl *FileLog) LogChannel() LogEntryChannel {
 	return fl.messagesWithOffsets
 }
 
-func (fl *FileLog) Retrieve(req *pb.GetLogsRequest) ([]*pb.LogEntry, error) {
-	// Find covering set of log segments
-	segments := []logSegment{fl.currentSegment}
-
+func (fl *FileLog) Retrieve(ctx context.Context, req *LogFilter) ([]*pb.LogEntry, *Continuation, error) {
 	logEntries := make([]*pb.LogEntry, 0)
 	scannedLogs := 0
-	for _, segment := range segments {
-		segmentLogs, scanned, err := segment.Retrieve(req.GetOffset(), req.GetMaxMessages())
-		if err != nil {
-			return nil, err
-		}
 
-		logEntries = append(logEntries, segmentLogs...)
-		scannedLogs += scanned
+	fl.RLock()
+	segments := make([]logSegment, len(fl.segments))
+	copy(segments, fl.segments)
+	fl.RUnlock()
+
+	for _, segment := range segments {
+		messagesRead := uint32(len(logEntries))
+
+		if segment.EndOffset() > req.StartOffset && messagesRead < req.MaxMessages {
+			segmentLogs, scanned, _, err := segment.Retrieve(ctx, req.StartOffset, -1, req.MaxMessages-messagesRead)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			logEntries = append(logEntries, segmentLogs...)
+			scannedLogs += scanned
+		}
 	}
 
 	fl.logger.Debugf("Scanned %d logs for %d returned messages",
 		scannedLogs, len(logEntries))
 
-	return logEntries, nil
+	return logEntries, nil, nil
 }
 
-func (fl *FileLog) Append(logs []*pb.LogEntry) ([]uint64, error) {
+// func (fl *FileLog) ContinueRetrieve(ctx context.Context, continuation *Continuation) ([]*pb.LogEntry, error) {
+// 	logEntries := make([]*pb.LogEntry, 0)
+// 	scannedLogs := 0
+
+// 	fl.RLock()
+// 	segments := make([]logSegment, len(fl.segments))
+// 	copy(segments, fl.segments)
+// 	fl.RUnlock()
+
+// 	nextOffset := continuation.LastOffsetRead + 1
+
+// 	continuation
+// 	for _, segment := range segments {
+// 		messagesRead := uint32(len(logEntries))
+
+// 		if segment.EndOffset() > nextOffset && messagesRead < req.MaxMessages {
+// 			segmentLogs, scanned, pos, err := segment.Retrieve(ctx, nextOffset, continuation.FilePosition, req.MaxMessages-messagesRead)
+// 			if err != nil {
+// 				return nil, err
+// 			}
+
+// 			logEntries = append(logEntries, segmentLogs...)
+// 			scannedLogs += scanned
+
+// 			if len(segmentLogs) > 0
+// 				lastLog := segmentLogs[len(segmentLogs) - 1]
+
+// 		}
+// 	}
+
+// 	fl.logger.Debugf("Scanned %d logs for %d returned messages",
+// 		scannedLogs, len(logEntries))
+
+// 	return logEntries, nil
+// }
+
+func (fl *FileLog) Append(ctx context.Context, logs []*pb.LogEntry) ([]uint64, error) {
 	fl.Lock()
 	defer fl.Unlock()
 
@@ -98,13 +135,18 @@ func (fl *FileLog) Append(logs []*pb.LogEntry) ([]uint64, error) {
 			newOffsets[i] = fl.nextOffset
 			fl.nextOffset += 1
 
-			fl.currentSegment.Append(log)
+			fl.currentSegment.Append(ctx, log)
 		}
 	}
 
 	fl.currentSegment.Flush()
 
-	// Publish to stream
+	// Roll log segment if necessary
+	if err := fl.rollLogIfNecessary(); err != nil {
+		return nil, err
+	}
+
+	// Publish to registered stream
 	for _, log := range logs {
 		fl.messagesWithOffsets <- &internal.TopicAndLog{
 			Topic:    fl.topic,
@@ -117,95 +159,24 @@ func (fl *FileLog) Append(logs []*pb.LogEntry) ([]uint64, error) {
 	return newOffsets, nil
 }
 
-func (s *fileLogSegment) Retrieve(startOffset uint64, maxMessages int32) ([]*pb.LogEntry, int, error) {
-	// Stupid inefficient
-	// TODO: seek to offset/timestamp bound
-	// TODO: only read up to max bytes
-	file, err := os.OpenFile(s.basePath+"/0.log", os.O_RDONLY, 0666)
-	if err != nil {
-		return nil, 0, err
-	}
+func (fl *FileLog) Length() uint64 {
+	fl.RLock()
+	defer fl.RUnlock()
 
-	reader := NewDelimitedReader(bufio.NewReader(file), MESSAGE_SIZE_LIMIT)
+	return fl.nextOffset
+}
 
-	logEntries := make([]*pb.LogEntry, 0)
-	scannedLogs := 0
-	for {
-		msg := &pb.LogEntry{}
-		err := reader.ReadMsg(msg)
-
-		if err == nil {
-			scannedLogs += 1
-
-			s.logger.Debugf("Scanning entry: %+v", msg)
-
-			if msg != nil && msg.GetOffset() >= startOffset {
-				logEntries = append(logEntries, msg)
-			}
-
-			if int32(len(logEntries)) == maxMessages {
-				break
-			}
-		} else {
-			// Found the end of the log
-			if err == io.EOF {
-				s.logger.Debugf("End of log, EOF")
-				break
-			} else {
-				return nil, scannedLogs, err
-			}
+func (fl *FileLog) rollLogIfNecessary() error {
+	// Called from write lock
+	// TODO config
+	if fl.currentSegment.SizeBytes() >= SEGMENT_SIZE_LIMIT {
+		newSegment, err := openSegment(fl.logger, fl.basePath, fl.nextOffset)
+		if err != nil {
+			return err
 		}
-	}
+		fl.currentSegment = newSegment
 
-	return logEntries, scannedLogs, nil
-}
-
-func (s *fileLogSegment) Append(log *pb.LogEntry) error {
-	if log.GetOffset() < s.endOffset {
-		return errors.New("Tried to append log with offset less than max offset to log segment")
-	} else {
-		s.endOffset = log.GetOffset()
-	}
-
-	before := s.filePosition
-	s.logger.Debugf("At position: %d pre-append()", s.filePosition)
-
-	bytesWritten, err := s.segmentWriter.WriteMsg(log)
-
-	if err != nil {
-		return err
-	}
-
-	s.filePosition += int64(bytesWritten)
-
-	s.logger.Debugf("Appended: %+v, wrote %d bytes", log, s.filePosition-before)
-
-	return nil
-}
-
-func (s *fileLogSegment) StartOffset() uint64 {
-	return s.startOffset
-}
-
-func (s *fileLogSegment) EndOffset() uint64 {
-	return s.endOffset
-}
-
-func (s *fileLogSegment) Flush() error {
-	s.fileWriter.Flush()
-
-	// TODO: also sync dir?
-	if err := s.file.Sync(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *fileLogSegment) Close() error {
-	s.Flush()
-	if err := s.file.Close(); err != nil {
-		return err
+		fl.segments = append(fl.segments, fl.currentSegment)
 	}
 
 	return nil
@@ -234,8 +205,34 @@ func OpenLogs(logger *zap.SugaredLogger, directory string) (map[string]Log, erro
 	return logs, nil
 }
 
+type ByNumericalFilename []os.FileInfo
+
+func (nf ByNumericalFilename) Len() int      { return len(nf) }
+func (nf ByNumericalFilename) Swap(i, j int) { nf[i], nf[j] = nf[j], nf[i] }
+func (nf ByNumericalFilename) Less(i, j int) bool {
+
+	// Use path names
+	pathA := nf[i].Name()
+	pathB := nf[j].Name()
+
+	// Grab integer value of each filename by parsing the string and slicing off
+	// the extension
+	a, err1 := strconv.ParseInt(pathA[0:strings.LastIndex(pathA, ".")], 10, 64)
+	b, err2 := strconv.ParseInt(pathB[0:strings.LastIndex(pathB, ".")], 10, 64)
+
+	// If any were not numbers sort lexographically
+	if err1 != nil || err2 != nil {
+		return pathA < pathB
+	}
+
+	// Which integer is smaller?
+	return a < b
+}
+
 func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*FileLog, error) {
 	basePath := path.Join(directory, topic)
+
+	logger.Debugf("Base path: %v", basePath)
 
 	exists, err := exists(basePath)
 	if err != nil {
@@ -248,13 +245,51 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 		}
 	}
 
-	// for each segment...
-	fls, err := openSegment(logger, basePath, 0)
+	entries, err := ioutil.ReadDir(basePath)
 	if err != nil {
 		return nil, err
 	}
 
-	nextOffset := fls.EndOffset()
+	sort.Sort(ByNumericalFilename(entries))
+
+	segments := make([]logSegment, 0)
+
+	if len(entries) == 0 {
+		// for each segment...
+		fls, err := openSegment(logger, basePath, 0)
+		if err != nil {
+			return nil, err
+		}
+
+		segments = append(segments, fls)
+	} else {
+		for _, entry := range entries { // TODO TODO sort numerically!
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
+				logger.Debugw("Opening segment",
+					"fileName", entry.Name(),
+					"topic", topic)
+				startOffset, err := strconv.ParseUint(strings.TrimSuffix(entry.Name(), ".log"), 10, 64)
+				if err != nil {
+					return nil, err
+				}
+
+				fls, err := openSegment(logger, basePath, startOffset)
+				if err != nil {
+					return nil, err
+				}
+
+				logger.Debugw("Opened segment",
+					"fileName", entry.Name(),
+					"startOffset", fls.StartOffset(),
+					"endOffset", fls.EndOffset())
+
+				segments = append(segments, fls)
+			}
+		}
+	}
+
+	lastSegment := segments[len(segments)-1]
+	nextOffset := lastSegment.EndOffset()
 
 	logger.Infow("Initializing log",
 		"basePath", basePath,
@@ -267,66 +302,7 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 		nextOffset:          nextOffset,
 		messagesWithOffsets: make(LogEntryChannel),
 		logger:              logger,
-		currentSegment:      fls,
+		segments:            segments,
+		currentSegment:      lastSegment,
 	}, nil
-}
-
-func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64) (logSegment, error) {
-	// TODO move to segment
-	filename := fmt.Sprintf("/%d.log", startOffset)
-	file, err := os.OpenFile(path.Join(basePath, filename), os.O_CREATE|os.O_RDWR|os.O_SYNC, 0666)
-	if err != nil {
-		return nil, err
-	}
-
-	nextOffset := startOffset
-	logEntry := &pb.LogEntry{}
-	reader := NewDelimitedReader(bufio.NewReader(file), MESSAGE_SIZE_LIMIT)
-	for {
-		err := reader.ReadMsg(logEntry)
-		if err != nil {
-			if err == io.EOF {
-				break
-			} else {
-				return nil, err
-			}
-		}
-
-		if logEntry.GetOffset() < nextOffset {
-			return nil, errors.New("Later log entry has lower offset than previous log entry")
-		}
-
-		nextOffset = logEntry.GetOffset() + 1
-	}
-
-	// Initialize end of file
-	endOfFile, err := file.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return nil, err
-	}
-
-	fileWriter := bufio.NewWriter(file)
-
-	return &fileLogSegment{
-		logger:        logger,
-		basePath:      basePath,
-		startOffset:   startOffset,
-		endOffset:     nextOffset,
-		file:          file,
-		fileWriter:    fileWriter,
-		filePosition:  endOfFile,
-		segmentWriter: NewDelimitedWriter(fileWriter),
-	}, nil
-}
-
-// exists returns whether the given file or directory exists or not
-func exists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return true, err
 }
