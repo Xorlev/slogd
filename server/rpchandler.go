@@ -113,6 +113,7 @@ func (s *structuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 		ch := s.addSubscriber(req, clientID)
 
 		c := &cursor{
+			ctx:            stream.Context(),
 			lastOffset:     min(req.GetOffset(), topic.Length()),
 			unreadMessages: ch,
 		}
@@ -173,51 +174,7 @@ func min(a, b uint64) uint64 {
 	return b
 }
 
-type cursor struct {
-	// request        *pb.GetLogsRequest
-	lastOffset     uint64
-	unreadMessages storage.LogEntryChannel
-}
-
-func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
-	for {
-		// read pages, go to sleep until dirty bit is set, read pages
-		filter := &storage.LogFilter{
-			StartOffset: c.lastOffset + 1,
-			MaxMessages: 1000,
-		}
-
-		// TODO CTX
-		initial, _, err := topic.Retrieve(context.Background(), filter)
-		if err != nil {
-			return err
-		}
-
-		lastOffset := c.lastOffset
-		for _, log := range initial {
-			lastOffset = log.GetOffset()
-			if err := f(toResponse(log)); err != nil {
-				return err
-			}
-		}
-
-		if len(initial) == 0 || lastOffset == c.lastOffset {
-			return nil
-		}
-
-		c.lastOffset = lastOffset
-	}
-
-	return nil
-}
-
-func toResponse(log *pb.LogEntry) *pb.GetLogsResponse {
-	return &pb.GetLogsResponse{
-		Logs: []*pb.LogEntry{log},
-	}
-}
-
-func (s *structuredLogServer) addSubscriber(req *pb.GetLogsRequest, clientID uint64) storage.LogEntryChannel {
+func (s *StructuredLogServer) addSubscriber(req *pb.GetLogsRequest, clientID uint64) storage.LogEntryChannel {
 	s.Lock()
 	val, ok := s.subscribers[req.GetTopic()]
 
