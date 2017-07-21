@@ -161,6 +161,9 @@ func (fi *fileIndex) Flush() error {
 }
 
 func (fi *fileIndex) Close() error {
+	fi.Lock()
+	defer fi.Unlock()
+
 	fi.Flush()
 	if err := fi.file.Close(); err != nil {
 		return err

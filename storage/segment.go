@@ -34,6 +34,7 @@ type fileLogSegment struct {
 
 	logger              *zap.SugaredLogger
 	basePath            string
+	closed              bool
 	startOffset         uint64
 	endOffset           uint64
 	file                *os.File
@@ -46,6 +47,10 @@ type fileLogSegment struct {
 }
 
 func (s *fileLogSegment) Retrieve(ctx context.Context, startOffset uint64, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
+	if s.closed {
+		return nil, 0, -1, errors.New("Segment is closed.")
+	}
+
 	startedAt := time.Now()
 	defer func() {
 		s.logger.Infof("Took %+v to scan segment", time.Since(startedAt))
@@ -120,6 +125,10 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 	s.Lock()
 	defer s.Unlock()
 
+	if s.closed {
+		return errors.New("Segment is closed.")
+	}
+
 	if log.GetOffset() < s.endOffset {
 		return errors.New("Tried to append log with offset less than max offset to log segment")
 	} else {
@@ -181,10 +190,19 @@ func (s *fileLogSegment) Flush() error {
 }
 
 func (s *fileLogSegment) Close() error {
+	s.Lock()
+	defer s.Unlock()
+
 	s.Flush()
 	if err := s.file.Close(); err != nil {
 		return err
 	}
+
+	if err := s.offsetIndex.Close(); err != nil {
+		return err
+	}
+
+	s.closed = true
 
 	return nil
 }

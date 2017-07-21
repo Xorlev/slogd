@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 )
 
-type structuredLogServer struct {
+type StructuredLogServer struct {
 	clientID uint64
 
 	sync.RWMutex
@@ -21,9 +21,11 @@ type structuredLogServer struct {
 	// map from string to Log
 	topics      map[string]storage.Log
 	subscribers map[string]map[uint64]storage.LogEntryChannel
+
+	fanin storage.LogEntryChannel
 }
 
-func (s *structuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*pb.GetLogsResponse, error) {
+func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*pb.GetLogsResponse, error) {
 	//clientID := atomic.AddUint64(&s.clientID, 1)
 
 	resp := &pb.GetLogsResponse{}
@@ -53,7 +55,10 @@ func (s *structuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 	}
 }
 
-func (s *structuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequest) (*pb.AppendResponse, error) {
+func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequest) (*pb.AppendResponse, error) {
+	if !isValidTopic(req.GetTopic()) {
+		return nil, grpc.Errorf(codes.InvalidArgument, "Topic must conform to pattern [a-z0-9_\\-.]+")
+	}
 	//clientID := atomic.AddUint64(&s.clientID, 1)
 
 	resp := &pb.AppendResponse{}
@@ -73,6 +78,7 @@ func (s *structuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 			return nil, grpc.Errorf(codes.Internal, "Error creating new topic: %v", err)
 		}
 
+		s.startTopicWatcher(log)
 		s.topics[req.GetTopic()] = log
 		topic = log
 	}
@@ -90,7 +96,7 @@ func (s *structuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 	return resp, nil
 }
 
-func (s *structuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.StructuredLog_StreamLogsServer) error {
+func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.StructuredLog_StreamLogsServer) error {
 	clientID := atomic.AddUint64(&s.clientID, 1)
 
 	s.logger.Debugw("Processing StreamLogs call",
@@ -190,14 +196,14 @@ func (s *StructuredLogServer) addSubscriber(req *pb.GetLogsRequest, clientID uin
 	return ch
 }
 
-func (s *structuredLogServer) removeSubscriber(req *pb.GetLogsRequest, clientID uint64) {
+func (s *StructuredLogServer) removeSubscriber(req *pb.GetLogsRequest, clientID uint64) {
 	s.Lock()
 	close(s.subscribers[req.GetTopic()][clientID])
 	delete(s.subscribers[req.GetTopic()], clientID)
 	s.Unlock()
 }
 
-func (s *structuredLogServer) pubsubStub(logChannel storage.LogEntryChannel) {
+func (s *StructuredLogServer) pubsubStub(logChannel storage.LogEntryChannel) {
 	s.logger.Info("Starting pubsub listener..")
 	for {
 		for log := range logChannel {
@@ -221,7 +227,7 @@ func (s *structuredLogServer) pubsubStub(logChannel storage.LogEntryChannel) {
 	}
 }
 
-func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*structuredLogServer, error) {
+func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*StructuredLogServer, error) {
 	// Read all topics (folder in storage dir)
 	// Spin off Goroutine for each topic
 	// Start server, protect with RWLock
@@ -235,7 +241,7 @@ func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*structuredLogSer
 		return nil, err
 	}
 
-	s := &structuredLogServer{
+	s := &StructuredLogServer{
 		config:      config,
 		logger:      logger,
 		topics:      topics,
@@ -244,14 +250,29 @@ func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*structuredLogSer
 
 	agg := make(storage.LogEntryChannel)
 	for _, log := range topics {
-		go func(c storage.LogEntryChannel) {
-			for msg := range c {
-				agg <- msg
-			}
-		}(log.LogChannel())
+		s.startTopicWatcher(log)
 	}
 
 	go s.pubsubStub(agg)
 
 	return s, nil
+}
+
+func (s *StructuredLogServer) startTopicWatcher(log storage.Log) {
+	go func(c storage.LogEntryChannel) {
+		for msg := range c {
+			s.fanin <- msg
+		}
+	}(log.LogChannel())
+}
+
+func (s *StructuredLogServer) Close() error {
+	s.Lock()
+	defer s.Unlock()
+
+	for _, log := range s.topics {
+		log.Close()
+	}
+
+	return nil
 }

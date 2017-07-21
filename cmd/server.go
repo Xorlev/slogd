@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime/pprof"
 
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"golang.org/x/net/context"
@@ -39,12 +38,8 @@ to quickly create a Cobra application.`,
 	},
 }
 
-// httpAddr = flag.String("http_addr", "localhost:8080", "slogd HTTP listener")
-// rpcAddr  = flag.String("rpc_addr", "localhost:9090", "slogd gRPC listener")
-// dataDir  = flag.String("data_dir", "./data", "data directory")
 var (
 	httpAddr string
-	rpcAddr  string
 	dataDir  string
 )
 
@@ -65,26 +60,8 @@ func init() {
 }
 
 func run(logger *zap.SugaredLogger) error {
-	f, err := os.Create("prof")
-	if err != nil {
-		logger.Errorf("Profile failed: %v", err)
-	}
-	pprof.StartCPUProfile(f)
-	defer pprof.StopCPUProfile()
-
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	go func() {
-		for sig := range c {
-			if sig == os.Interrupt {
-				pprof.StopCPUProfile()
-			}
-		}
-	}()
-
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	lis, err := net.Listen("tcp", rpcAddr)
 	if err != nil {
@@ -114,7 +91,27 @@ func run(logger *zap.SugaredLogger) error {
 	if err != nil {
 		return err
 	}
+	srv := &http.Server{Addr: httpAddr, Handler: mux}
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for sig := range c {
+			if sig == os.Interrupt {
+				srv.Shutdown(ctx)
+				grpcServer.GracefulStop()
+				sls.Close()
+				logger.Info("Shutting down.")
+				cancel()
+				os.Exit(0)
+			}
+		}
+	}()
 
 	logger.Infof("Starting HTTP listener on %s", httpAddr)
-	return http.ListenAndServe(httpAddr, mux)
+	go srv.ListenAndServe()
+
+	<-ctx.Done()
+
+	return nil
 }

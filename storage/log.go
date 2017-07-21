@@ -27,6 +27,7 @@ type Log interface {
 	ContinueRetrieve(context.Context, *Continuation) ([]*pb.LogEntry, error)
 	Append(context.Context, []*pb.LogEntry) ([]uint64, error)
 	Length() uint64
+	Close() error
 }
 
 type FileLog struct {
@@ -35,6 +36,7 @@ type FileLog struct {
 
 	logger              *zap.SugaredLogger
 	basePath            string
+	closed              bool
 	topic               string
 	messagesWithOffsets LogEntryChannel
 	nextOffset          uint64
@@ -164,6 +166,21 @@ func (fl *FileLog) Length() uint64 {
 	defer fl.RUnlock()
 
 	return fl.nextOffset
+}
+
+func (fl *FileLog) Close() error {
+	fl.Lock()
+	defer fl.Unlock()
+
+	for _, segment := range fl.segments {
+		if err := segment.Close(); err != nil {
+			return err
+		}
+	}
+
+	fl.closed = true
+
+	return nil
 }
 
 func (fl *FileLog) rollLogIfNecessary() error {
