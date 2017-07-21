@@ -70,6 +70,10 @@ func (fl *FileLog) Retrieve(ctx context.Context, req *LogFilter) ([]*pb.LogEntry
 	fl.RUnlock()
 
 	for _, segment := range segments {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+
 		messagesRead := uint32(len(logEntries))
 
 		if segment.EndOffset() > req.StartOffset && messagesRead < req.MaxMessages {

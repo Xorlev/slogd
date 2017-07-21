@@ -87,6 +87,11 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, startOffset uint64, fileP
 	logEntries := make([]*pb.LogEntry, 0)
 	scannedLogs := 0
 	for {
+		// Abort early if we can
+		if ctx.Err() != nil {
+			return nil, scannedLogs, -1, ctx.Err()
+		}
+
 		msg := &pb.LogEntry{}
 		err := reader.ReadMsg(msg)
 
