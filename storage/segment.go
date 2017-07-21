@@ -151,8 +151,8 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 
 	s.filePosition += int64(bytesWritten)
 
-	// Index if necessary
-	if s.filePosition-s.positionOfLastIndex >= BYTES_BETWEEN_INDEX {
+	// Index if this is the first item or if it's been BYTES_BETWEEN_INDEX since the last index
+	if s.positionOfLastIndex == 0 || s.filePosition-s.positionOfLastIndex >= BYTES_BETWEEN_INDEX {
 		s.offsetIndex.IndexOffset(log.GetOffset(), s.filePosition-int64(bytesWritten))
 		s.positionOfLastIndex = s.filePosition
 	}
