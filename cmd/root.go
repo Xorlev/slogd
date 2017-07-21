@@ -4,6 +4,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	rpcAddr string
+)
+
 var RootCmd = &cobra.Command{
 	Use:   "slogd",
 	Short: "Hugo is a very fast static site generator",
