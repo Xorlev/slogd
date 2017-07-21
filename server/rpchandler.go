@@ -1,16 +1,14 @@
 package server
 
 import (
+	pb "github.com/xorlev/slogd/proto"
+	storage "github.com/xorlev/slogd/storage"
 	"go.uber.org/zap"
-	"sync"
-	"sync/atomic"
-
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-
-	pb "github.com/xorlev/slogd/proto"
-	storage "github.com/xorlev/slogd/storage"
+	"sync"
+	"sync/atomic"
 )
 
 type structuredLogServer struct {
@@ -34,11 +32,15 @@ func (s *structuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 	)
 
 	s.RLock()
-	val, ok := s.topics[req.GetTopic()]
+	topic, ok := s.topics[req.GetTopic()]
 	s.RUnlock()
 
 	if ok {
-		logs, err := val.Retrieve(req)
+		filter := &storage.LogFilter{
+			StartOffset: req.GetOffset(),
+			MaxMessages: uint32(req.GetMaxMessages()),
+		}
+		logs, _, err := topic.Retrieve(ctx, filter)
 		if err != nil {
 			return nil, grpc.Errorf(codes.Internal, "Error retrieving logs: %v", err)
 		}
@@ -61,9 +63,10 @@ func (s *structuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 	)
 
 	s.Lock()
-	val, ok := s.topics[req.GetTopic()]
+	topic, ok := s.topics[req.GetTopic()]
 	if !ok {
-		log, err := storage.NewFileLog(s.logger, ".", req.GetTopic())
+		// TODO fix subscriber agg channel
+		log, err := storage.NewFileLog(s.logger, s.config.DataDir, req.GetTopic())
 
 		if err != nil {
 			s.Unlock()
@@ -71,11 +74,11 @@ func (s *structuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 		}
 
 		s.topics[req.GetTopic()] = log
-		val = log
+		topic = log
 	}
 	s.Unlock()
 
-	offsets, err := val.Append(req.GetLogs())
+	offsets, err := topic.Append(ctx, req.GetLogs())
 	if err != nil {
 		return nil, grpc.Errorf(codes.Internal, "Error appending logs: %v", err)
 	}
@@ -101,43 +104,117 @@ func (s *structuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 	// otherwise do one last GetLogs before for/select
 	// once a page is < 100 messages, start a consumer
 
-	ch := s.addSubscriber(req, clientID)
-	for {
-		select {
-		case <-stream.Context().Done():
-			s.logger.Infow("Stream finished.",
-				"clientID", clientID,
-			)
+	s.RLock()
+	topic, ok := s.topics[req.GetTopic()]
+	s.RUnlock()
 
-			s.removeSubscriber(req, clientID)
+	if ok {
 
-			// Done, remove
-			return nil
-		case log := <-ch:
-			response := &pb.GetLogsResponse{
-				Logs: []*pb.LogEntry{log.LogEntry},
-			}
+		ch := s.addSubscriber(req, clientID)
 
-			if err := stream.SendMsg(response); err != nil {
-				s.logger.Errorw("Failed to send message",
-					"err", err,
+		c := &cursor{
+			lastOffset:     min(req.GetOffset(), topic.Length()),
+			unreadMessages: ch,
+		}
+
+		if err := c.consume(topic, stream.SendMsg); err != nil {
+			return err
+		}
+		for {
+			select {
+			case <-stream.Context().Done():
+				s.logger.Infow("Stream finished.",
 					"clientID", clientID,
 				)
 
 				s.removeSubscriber(req, clientID)
-				return err
+
+				// Done, remove
+				return nil
+			case <-ch:
+				if err := c.consume(topic, stream.SendMsg); err != nil {
+					return err
+				}
+
+				// 	response := &pb.GetLogsResponse{
+				// 		Logs: []*pb.LogEntry{log.LogEntry},
+				// 	}
+
+				// 	if err := stream.SendMsg(response); err != nil {
+				// 		s.logger.Errorw("Failed to send message",
+				// 			"err", err,
+				// 			"clientID", clientID,
+				// 		)
+
+				// 		s.removeSubscriber(req, clientID)
+				// 		return err
+				// 	}
 			}
 		}
-	}
 
-	select {
-	case <-ch:
-		// ignore, we're just clearing the channel if it has a value
-	default:
+		select {
+		case <-ch:
+			// ignore, we're just clearing the channel if it has a value
+		default:
 
+		}
+	} else {
+		return grpc.Errorf(codes.InvalidArgument, "Topic does not exist: %v", req.GetTopic())
 	}
 
 	return nil
+}
+
+// really, go?
+func min(a, b uint64) uint64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+type cursor struct {
+	// request        *pb.GetLogsRequest
+	lastOffset     uint64
+	unreadMessages storage.LogEntryChannel
+}
+
+func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
+	for {
+		// read pages, go to sleep until dirty bit is set, read pages
+		filter := &storage.LogFilter{
+			StartOffset: c.lastOffset + 1,
+			MaxMessages: 1000,
+		}
+
+		// TODO CTX
+		initial, _, err := topic.Retrieve(context.Background(), filter)
+		if err != nil {
+			return err
+		}
+
+		lastOffset := c.lastOffset
+		for _, log := range initial {
+			lastOffset = log.GetOffset()
+			if err := f(toResponse(log)); err != nil {
+				return err
+			}
+		}
+
+		if len(initial) == 0 || lastOffset == c.lastOffset {
+			return nil
+		}
+
+		c.lastOffset = lastOffset
+	}
+
+	return nil
+}
+
+func toResponse(log *pb.LogEntry) *pb.GetLogsResponse {
+	return &pb.GetLogsResponse{
+		Logs: []*pb.LogEntry{log},
+	}
 }
 
 func (s *structuredLogServer) addSubscriber(req *pb.GetLogsRequest, clientID uint64) storage.LogEntryChannel {
@@ -167,14 +244,19 @@ func (s *structuredLogServer) pubsubStub(logChannel storage.LogEntryChannel) {
 	s.logger.Info("Starting pubsub listener..")
 	for {
 		for log := range logChannel {
-			s.logger.Infof("Published log: %+v", log)
+			s.logger.Debugf("Published log: %+v", log)
 
 			s.RLock()
 			val, ok := s.subscribers[log.Topic]
 			if ok {
 				// non-blocking w/ select?
 				for _, subscriber := range val {
-					subscriber <- log
+					select {
+					case subscriber <- log:
+						// Noop
+					default:
+						// Skip
+					}
 				}
 			}
 			s.RUnlock()
