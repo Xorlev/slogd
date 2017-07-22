@@ -36,8 +36,6 @@ type fileLogSegment struct {
 	logger              *zap.SugaredLogger
 	basePath            string
 	closed              bool
-	startOffset         uint64
-	endOffset           uint64
 	file                *os.File
 	filename            string
 	filePosition        int64 // TODO: ensure reads never go beyond filePosition
@@ -45,6 +43,11 @@ type fileLogSegment struct {
 	offsetIndex         Index
 	segmentWriter       WriteCloser
 	positionOfLastIndex int64
+
+	startOffset uint64
+	endOffset   uint64
+	minTs       *time.Time
+	maxTs       *time.Time
 }
 
 func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
@@ -269,21 +272,73 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 
 	fileWriter := bufio.NewWriter(file)
 
+	fls := &fileLogSegment{
+		logger:        ctxLogger,
+		basePath:      basePath,
+		file:          file,
+		filename:      filename,
+		fileWriter:    fileWriter,
+		filePosition:  endOfFile,
+		segmentWriter: NewDelimitedWriter(fileWriter),
+
+		startOffset: startOffset,
+		endOffset:   nextOffset,
+		minTs:       minTs,
+		maxTs:       maxTs,
+	}
+
 	offsetIndex, err := OpenOffsetIndex(logger, basePath, startOffset)
 	if err != nil {
 		return nil, err
 	}
 
-	return &fileLogSegment{
-		logger:        logger,
-		basePath:      basePath,
-		startOffset:   startOffset,
-		endOffset:     nextOffset,
-		file:          file,
-		filename:      filename,
-		fileWriter:    fileWriter,
-		filePosition:  endOfFile,
-		offsetIndex:   offsetIndex,
-		segmentWriter: NewDelimitedWriter(fileWriter),
-	}, nil
+	fls.offsetIndex = offsetIndex
+
+	if offsetIndex.SizeBytes() == 0 && startOffset != nextOffset {
+		// Index is missing
+		logger.Infow("Index missing for segment, rebuilding",
+			"filename", filename,
+		)
+
+		if err := fls.rebuildIndex(); err != nil {
+			return nil, err
+		}
+	}
+
+	return fls, nil
+}
+
+func (s *fileLogSegment) rebuildIndex() error {
+	// Rewind segment to start of file
+	s.file.Seek(0, io.SeekStart)
+
+	var lastIndexPosition int64 = 0
+	logEntry := &pb.LogEntry{}
+	reader := NewDelimitedReader(bufio.NewReader(s.file), MESSAGE_SIZE_LIMIT)
+	for {
+		err := reader.ReadMsg(logEntry)
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				return err
+			}
+		}
+
+		position, err := s.file.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return err
+		}
+
+		if lastIndexPosition == 0 || position-lastIndexPosition >= BYTES_BETWEEN_INDEX {
+			if err := s.offsetIndex.IndexOffset(logEntry.GetOffset(), position); err != nil {
+				return err
+			}
+			lastIndexPosition = position
+		}
+	}
+
+	s.logger.Info("Successfully rebuild index.")
+
+	return nil
 }

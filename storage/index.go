@@ -18,7 +18,9 @@ import (
 type Index interface {
 	Find(offset uint64) (uint64, error)
 	IndexOffset(offset uint64, position int64) error
+	Size() int
 	SizeBytes() uint64
+	Truncate() error
 	Flush() error
 	Close() error
 }
@@ -32,6 +34,7 @@ type fileIndex struct {
 	filename     string
 	filePosition int64 // TODO: ensure reads never go beyond filePosition
 	startOffset  uint64
+	endOffset    uint64
 
 	buffer []byte
 }
@@ -50,7 +53,7 @@ func (fi *fileIndex) Find(targetOffset uint64) (uint64, error) {
 	// lowest without going over
 	// midpoint
 	var lo = 0
-	var high = fi.entries() - 1
+	var high = fi.Size() - 1
 
 	var iterations = 0
 	for lo <= high {
@@ -117,7 +120,7 @@ func (fi *fileIndex) readEntryAt(file *os.File, position int64, buffer []byte) (
 	return offset, filePos, nil
 }
 
-func (fi *fileIndex) entries() int {
+func (fi *fileIndex) Size() int {
 	return int(fi.filePosition) / 16
 }
 
@@ -151,6 +154,19 @@ func (fi *fileIndex) SizeBytes() uint64 {
 	return uint64(fi.filePosition)
 }
 
+func (fi *fileIndex) Truncate() error {
+	fi.Lock()
+	defer fi.Unlock()
+	if err := fi.file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := fi.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (fi *fileIndex) Flush() error {
 	// TODO: also sync dir?
 	if err := fi.file.Sync(); err != nil {
@@ -180,6 +196,11 @@ func OpenOffsetIndex(logger *zap.SugaredLogger, basePath string, startOffset uin
 		return nil, err
 	}
 
+	// TODO: check offset not corrupted
+	// Iterate over entries checking that both offset and file position are monotonically increasing
+	// Also ensure index size is expected; correct number of entries
+	// Otherwise truncate & rebuild
+
 	// Initialize end of file
 	if _, err := file.Seek(0, io.SeekEnd); err != nil {
 		return nil, err
@@ -190,14 +211,34 @@ func OpenOffsetIndex(logger *zap.SugaredLogger, basePath string, startOffset uin
 		return nil, err
 	}
 
-	logger.Debugf("Opening index, eof: %d", endOfFile)
+	logger.Debugw("Opening index",
+		"filename", filename,
+		"startOffset", startOffset,
+	)
 
-	return &fileIndex{
+	fi := &fileIndex{
 		logger:       logger,
 		file:         file,
 		filename:     filename,
 		filePosition: endOfFile,
 		startOffset:  startOffset,
+		endOffset:    startOffset,
 		buffer:       make([]byte, 16),
-	}, nil
+	}
+
+	if fi.Size() > 0 {
+		offset, _, err := fi.readEntryAt(fi.file, int64(fi.Size()-1), fi.buffer)
+		if err != nil {
+			return nil, err
+		}
+		fi.endOffset = offset
+	}
+
+	logger.Debugw("Opened index",
+		"filename", filename,
+		"startOffset", startOffset,
+		"endOffset", fi.endOffset,
+	)
+
+	return fi, nil
 }
