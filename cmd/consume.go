@@ -14,18 +14,23 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
+	"github.com/gogo/protobuf/proto"
 	"github.com/spf13/cobra"
 	pb "github.com/xorlev/slogd/proto"
 	context "golang.org/x/net/context"
 	"google.golang.org/grpc"
+	"io"
 	"os"
 )
 
+var (
+	startOffset uint64
+)
+
 // produceCmd represents the produce command
-var produceCmd = &cobra.Command{
-	Use:   "produce",
+var consumeCmd = &cobra.Command{
+	Use:   "consume",
 	Short: "A brief description of your command",
 	Long: `A longer description that spans multiple lines and likely contains examples
 and usage of using your command. For example:
@@ -51,73 +56,38 @@ to quickly create a Cobra application.`,
 		defer conn.Close()
 		client := pb.NewStructuredLogClient(conn)
 
-		scanner := bufio.NewScanner(os.Stdin)
-
-		lineCh := make(chan []byte, 100)
-		go func() {
-			for scanner.Scan() {
-				lineCh <- scanner.Bytes()
-			}
-
-			close(lineCh)
-		}()
-
-		var buffer [][]byte = make([][]byte, 0)
-
-		for {
-			line, more := <-lineCh
-			if more {
-				buffer = append(buffer, line)
-
-				if len(buffer) >= 100 {
-					if err := sendEntries(client, buffer); err != nil {
-						fmt.Printf("Failed to send entries: %+v", err)
-						os.Exit(1)
-					}
-
-					buffer = make([][]byte, 0)
-				}
-			} else {
-				if err := sendEntries(client, buffer); err != nil {
-					fmt.Printf("Failed to send entries: %+v", err)
-					os.Exit(1)
-				}
-				buffer = nil
-				break
-			}
+		req := &pb.GetLogsRequest{
+			Topic: topic,
 		}
 
-		fmt.Printf("Done")
+		slc, err := client.StreamLogs(ctx, req)
+		if err != nil {
+			fmt.Printf("Failed to stream logs: %v\n", err)
+			os.Exit(1)
+		}
+
+		for {
+			log, err := slc.Recv()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				fmt.Printf("Failed to stream logs: %v\n", err)
+				os.Exit(1)
+			}
+
+			log.GetLogs()
+
+			b, _ := proto.Marshal(log)
+			os.Stdout.Write(b)
+		}
 	},
 }
 
-func sendEntries(client pb.StructuredLogClient, buffer [][]byte) error {
-	fmt.Printf("Sending %d entries\n", len(buffer))
-
-	entries := make([]*pb.LogEntry, 0)
-	for _, l := range buffer {
-		entry := &pb.LogEntry{
-			Entry: &pb.LogEntry_RawBytes{
-				RawBytes: l,
-			},
-		}
-
-		entries = append(entries, entry)
-	}
-	_, err := client.AppendLogs(context.Background(), &pb.AppendRequest{
-		Topic: topic,
-		Logs:  entries,
-	})
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func init() {
-	RootCmd.AddCommand(produceCmd)
+	RootCmd.AddCommand(consumeCmd)
 
-	produceCmd.Flags().StringVar(&rpcAddr, "server_addr", "localhost:8080", "slogd server")
-	produceCmd.Flags().StringVar(&topic, "topic", "", "slogd topic to produce to")
+	consumeCmd.Flags().StringVar(&rpcAddr, "server_addr", "localhost:8080", "slogd server")
+	consumeCmd.Flags().StringVar(&topic, "topic", "", "slogd topic to produce to")
+	consumeCmd.Flags().Uint64Var(&startOffset, "start_offset", 0, "offset to start streaming from")
 }

@@ -5,6 +5,7 @@ import (
 )
 
 var (
+	topic   string
 	rpcAddr string
 )
 
