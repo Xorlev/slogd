@@ -2,8 +2,9 @@ package storage
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
+	"github.com/gogo/protobuf/types"
+	"github.com/pkg/errors"
 	pb "github.com/xorlev/slogd/proto"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
@@ -19,7 +20,7 @@ const (
 )
 
 type logSegment interface {
-	Retrieve(context.Context, uint64, int64, uint32) ([]*pb.LogEntry, int, int64, error)
+	Retrieve(context.Context, *LogFilter, int64, uint32) ([]*pb.LogEntry, int, int64, error)
 	Append(context.Context, *pb.LogEntry) error
 	StartOffset() uint64
 	EndOffset() uint64
@@ -46,7 +47,10 @@ type fileLogSegment struct {
 	positionOfLastIndex int64
 }
 
-func (s *fileLogSegment) Retrieve(ctx context.Context, startOffset uint64, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
+func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
+	s.RLock()
+	defer s.RUnlock()
+
 	if s.closed {
 		return nil, 0, -1, errors.New("Segment is closed.")
 	}
@@ -66,13 +70,15 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, startOffset uint64, fileP
 	var positionStart uint64 = 0
 
 	if filePosition < 0 {
-		if startOffset > 0 {
+		if logFilter.StartOffset > 0 {
 			// Seek to first position
 			var err error
-			positionStart, err = s.offsetIndex.Find(startOffset)
+			positionStart, err = s.offsetIndex.Find(logFilter.StartOffset)
 			if err != nil {
 				return nil, 0, -1, err
 			}
+		} else if !logFilter.Timestamp.IsZero() {
+			s.logger.Warn("Timestamp indices have not yet been implemented, falling back to full log scans.")
 		}
 	} else {
 		positionStart = uint64(filePosition)
@@ -97,11 +103,20 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, startOffset uint64, fileP
 
 		if err == nil {
 			scannedLogs += 1
-
 			// s.logger.Debugf("Scanning entry: %+v", msg)
 
-			if msg != nil && msg.GetOffset() >= startOffset {
-				logEntries = append(logEntries, msg)
+			// Check that message is inside our offset boundary
+			if msg != nil {
+				passes, err := logFilter.LogPassesFilter(msg)
+
+				// Failed to run filter, propagate
+				if err != nil {
+					return nil, 0, -1, errors.Wrap(err, "Failed to run LogFilter over log entry")
+				}
+
+				if passes {
+					logEntries = append(logEntries, msg)
+				}
 			}
 
 			if uint32(len(logEntries)) == maxMessages {

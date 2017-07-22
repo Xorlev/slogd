@@ -31,8 +31,8 @@ package storage
 import (
 	"bufio"
 	"encoding/binary"
-	"errors"
-	"github.com/golang/protobuf/proto"
+	"github.com/gogo/protobuf/proto"
+	"github.com/pkg/errors"
 	"io"
 )
 
@@ -73,17 +73,17 @@ func (this *varintWriter) WriteMsg(msg proto.Message) (bytesWritten int, err err
 	var data []byte
 	data, err = proto.Marshal(msg)
 	if err != nil {
-		return 0, err
+		return 0, errors.Wrap(err, "Error marshalling proto")
 	}
 
 	length := uint64(len(data))
 	n := binary.PutUvarint(this.lenBuf, length)
 	_, err = this.w.Write(this.lenBuf[:n])
 	if err != nil {
-		return 0, err
+		return 0, errors.Wrap(err, "Error writing proto to buffer")
 	}
 	_, err = this.w.Write(data)
-	return n + len(data), err
+	return n + len(data), errors.Wrap(err, "Error writing to storage")
 }
 
 func (this *varintWriter) Close() error {
@@ -111,7 +111,7 @@ type varintReader struct {
 func (this *varintReader) ReadMsg(msg proto.Message) error {
 	length64, err := binary.ReadUvarint(this.r)
 	if err != nil {
-		return err
+		return err // Must return io.EOF
 	}
 	length := int(length64)
 	if length < 0 || length > this.maxSize {
@@ -122,7 +122,7 @@ func (this *varintReader) ReadMsg(msg proto.Message) error {
 	}
 	buf := this.buf[:length]
 	if _, err := io.ReadFull(this.r, buf); err != nil {
-		return err
+		return err // Must return io.EOF
 	}
 	return proto.Unmarshal(buf, msg)
 }

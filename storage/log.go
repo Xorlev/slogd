@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"github.com/gogo/protobuf/types"
+	"github.com/pkg/errors"
 	"github.com/xorlev/slogd/internal"
 	pb "github.com/xorlev/slogd/proto"
 	"go.uber.org/zap"
@@ -12,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -47,7 +50,22 @@ type FileLog struct {
 type LogFilter struct {
 	StartOffset uint64
 	MaxMessages uint32
-	// TODO: timestamp
+	Timestamp   time.Time
+}
+
+func (lf *LogFilter) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
+	if !lf.Timestamp.IsZero() {
+		ts, err := types.TimestampFromProto(entry.GetTimestamp())
+		if err != nil {
+			return false, err
+		}
+
+		return ts == lf.Timestamp || ts.After(lf.Timestamp), nil
+	} else if lf.StartOffset > 0 {
+		return entry.GetOffset() >= lf.StartOffset, nil
+	}
+
+	return true, nil
 }
 
 type Continuation struct {
@@ -76,10 +94,11 @@ func (fl *FileLog) Retrieve(ctx context.Context, req *LogFilter) ([]*pb.LogEntry
 
 		messagesRead := uint32(len(logEntries))
 
+		// TODO: add EndTimestamp?
 		if segment.EndOffset() > req.StartOffset && messagesRead < req.MaxMessages {
-			segmentLogs, scanned, _, err := segment.Retrieve(ctx, req.StartOffset, -1, req.MaxMessages-messagesRead)
+			segmentLogs, scanned, _, err := segment.Retrieve(ctx, req, -1, req.MaxMessages-messagesRead)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, errors.Wrap(err, "Error reading from segment")
 			}
 
 			logEntries = append(logEntries, segmentLogs...)
