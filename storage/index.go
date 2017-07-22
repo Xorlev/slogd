@@ -120,10 +120,6 @@ func (fi *fileIndex) readEntryAt(file *os.File, position int64, buffer []byte) (
 	return offset, filePos, nil
 }
 
-func (fi *fileIndex) Size() int {
-	return int(fi.filePosition) / 16
-}
-
 func (fi *fileIndex) IndexOffset(offset uint64, position int64) error {
 	fi.Lock()
 	defer fi.Unlock()
@@ -147,6 +143,14 @@ func (fi *fileIndex) IndexOffset(offset uint64, position int64) error {
 	return nil
 }
 
+// Index size in entries
+func (fi *fileIndex) Size() int {
+	fi.RLock()
+	defer fi.RUnlock()
+	return int(fi.filePosition) / 16
+}
+
+// Index size in bytes
 func (fi *fileIndex) SizeBytes() uint64 {
 	fi.RLock()
 	defer fi.RUnlock()
@@ -226,6 +230,7 @@ func OpenOffsetIndex(logger *zap.SugaredLogger, basePath string, startOffset uin
 		buffer:       make([]byte, 16),
 	}
 
+	// If index is non-zero sized, figure out the last offset we have indexed
 	if fi.Size() > 0 {
 		offset, _, err := fi.readEntryAt(fi.file, int64(fi.Size()-1), fi.buffer)
 		if err != nil {
