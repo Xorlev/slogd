@@ -28,8 +28,18 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		logger, _ := zap.NewProduction()
+		cfg := zap.NewDevelopmentConfig()
+		logger, _ := cfg.Build()
 		defer logger.Sync() // flushes buffer, if any
+
+		if verbose {
+			cfg.Level.SetLevel(zap.DebugLevel)
+			cfg.Development = true
+		} else {
+			cfg.Level.SetLevel(zap.InfoLevel)
+			cfg.Development = false
+		}
+
 		flag.Parse()
 
 		if err := run(logger.Sugar()); err != nil {
@@ -41,6 +51,7 @@ to quickly create a Cobra application.`,
 var (
 	httpAddr string
 	dataDir  string
+	verbose  bool
 )
 
 func init() {
@@ -57,6 +68,7 @@ func init() {
 	serverCmd.Flags().StringVarP(&httpAddr, "http_addr", "", "localhost:8080", "slogd HTTP listener")
 	serverCmd.Flags().StringVarP(&rpcAddr, "rpc_addr", "", "localhost:9090", "slogd gRPC listener")
 	serverCmd.Flags().StringVarP(&dataDir, "data_dir", "", "./data", "data directory")
+	serverCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose debug logging")
 }
 
 func run(logger *zap.SugaredLogger) error {
