@@ -148,13 +148,37 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 	defer s.Unlock()
 
 	if s.closed {
-		return errors.New("Segment is closed.")
+		return errors.New("Segment is closed")
 	}
+
+	// Assign timestamp
+	newTime := time.Now()
+	if s.maxTs != nil && newTime.Before(*s.maxTs) {
+		return errors.New("Time moving backwards!")
+	}
+
+	ts, err := types.TimestampProto(newTime)
+	if err != nil {
+		return err
+	}
+
+	log.Timestamp = ts
 
 	if log.GetOffset() < s.endOffset {
 		return errors.New("Tried to append log with offset less than max offset to log segment")
 	} else {
 		s.endOffset = log.GetOffset()
+	}
+
+	logTimestamp, err := types.TimestampFromProto(log.GetTimestamp())
+	if err != nil {
+		return err
+	}
+	if s.minTs == nil || logTimestamp.Before(*s.minTs) {
+		s.minTs = &logTimestamp
+	}
+	if s.maxTs == nil || logTimestamp.After(*s.maxTs) {
+		s.maxTs = &logTimestamp
 	}
 
 	before := s.filePosition
@@ -163,7 +187,7 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 	bytesWritten, err := s.segmentWriter.WriteMsg(log)
 
 	if err != nil {
-		return err
+		return errors.Wrap(err, "Error writing to segment.")
 	}
 
 	s.filePosition += int64(bytesWritten)
@@ -245,6 +269,8 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 	nextOffset := startOffset
 	logEntry := &pb.LogEntry{}
 	reader := NewDelimitedReader(bufio.NewReader(file), MESSAGE_SIZE_LIMIT)
+	var minTs *time.Time = nil
+	var maxTs *time.Time = nil
 	for {
 		err := reader.ReadMsg(logEntry)
 		if err != nil {
@@ -260,6 +286,19 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 				"logEntry_offset", logEntry.GetOffset(),
 			)
 			return nil, errors.New(fmt.Sprintf("Later log entry has lower offset than previous log entry: %d < %d", logEntry.GetOffset(), nextOffset))
+		}
+
+		logTimestamp, err := types.TimestampFromProto(logEntry.GetTimestamp())
+		if err != nil {
+			return nil, err
+		}
+
+		if minTs == nil || logTimestamp.Before(*minTs) {
+			minTs = &logTimestamp
+		}
+
+		if maxTs == nil || logTimestamp.After(*maxTs) {
+			maxTs = &logTimestamp
 		}
 
 		nextOffset = logEntry.GetOffset() + 1
