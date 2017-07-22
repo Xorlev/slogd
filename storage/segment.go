@@ -24,7 +24,10 @@ type logSegment interface {
 	Append(context.Context, *pb.LogEntry) error
 	StartOffset() uint64
 	EndOffset() uint64
+	StartTime() time.Time
+	EndTime() time.Time
 	SizeBytes() uint64
+	Delete() error
 	Flush() error
 	Close() error
 }
@@ -46,8 +49,8 @@ type fileLogSegment struct {
 
 	startOffset uint64
 	endOffset   uint64
-	minTs       *time.Time
-	maxTs       *time.Time
+	startTime   *time.Time
+	endTime     *time.Time
 }
 
 func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
@@ -153,7 +156,7 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 
 	// Assign timestamp
 	newTime := time.Now()
-	if s.maxTs != nil && newTime.Before(*s.maxTs) {
+	if s.endTime != nil && newTime.Before(*s.endTime) {
 		return errors.New("Time moving backwards!")
 	}
 
@@ -174,11 +177,11 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 	if err != nil {
 		return err
 	}
-	if s.minTs == nil || logTimestamp.Before(*s.minTs) {
-		s.minTs = &logTimestamp
+	if s.startTime == nil || logTimestamp.Before(*s.startTime) {
+		s.startTime = &logTimestamp
 	}
-	if s.maxTs == nil || logTimestamp.After(*s.maxTs) {
-		s.maxTs = &logTimestamp
+	if s.endTime == nil || logTimestamp.After(*s.endTime) {
+		s.endTime = &logTimestamp
 	}
 
 	before := s.filePosition
@@ -217,11 +220,45 @@ func (s *fileLogSegment) EndOffset() uint64 {
 	return s.endOffset
 }
 
+func (s *fileLogSegment) StartTime() time.Time {
+	s.RLock()
+	defer s.RUnlock()
+
+	return *s.startTime
+}
+
+func (s *fileLogSegment) EndTime() time.Time {
+	s.RLock()
+	defer s.RUnlock()
+
+	return *s.endTime
+}
+
 func (s *fileLogSegment) SizeBytes() uint64 {
 	s.RLock()
 	defer s.RUnlock()
 
 	return uint64(s.filePosition)
+}
+
+func (s *fileLogSegment) Delete() error {
+	s.Lock()
+	defer s.Unlock()
+
+	s.Flush()
+	if err := s.file.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Remove(s.filename); err != nil {
+		return errors.Wrap(err, "Unable to remove segment.")
+	}
+
+	if err := s.offsetIndex.Delete(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (s *fileLogSegment) Flush() error {
@@ -269,8 +306,8 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 	nextOffset := startOffset
 	logEntry := &pb.LogEntry{}
 	reader := NewDelimitedReader(bufio.NewReader(file), MESSAGE_SIZE_LIMIT)
-	var minTs *time.Time = nil
-	var maxTs *time.Time = nil
+	var startTime *time.Time = nil
+	var endTime *time.Time = nil
 	for {
 		err := reader.ReadMsg(logEntry)
 		if err != nil {
@@ -293,15 +330,20 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 			return nil, err
 		}
 
-		if minTs == nil || logTimestamp.Before(*minTs) {
-			minTs = &logTimestamp
+		if startTime == nil || logTimestamp.Before(*startTime) {
+			startTime = &logTimestamp
 		}
 
-		if maxTs == nil || logTimestamp.After(*maxTs) {
-			maxTs = &logTimestamp
+		if endTime == nil || logTimestamp.After(*endTime) {
+			endTime = &logTimestamp
 		}
 
 		nextOffset = logEntry.GetOffset() + 1
+	}
+
+	if startTime == nil {
+		startTime = &time.Time{}
+		endTime = &time.Time{}
 	}
 
 	// Initialize end of file
@@ -323,8 +365,8 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 
 		startOffset: startOffset,
 		endOffset:   nextOffset,
-		minTs:       minTs,
-		maxTs:       maxTs,
+		startTime:   startTime,
+		endTime:     endTime,
 	}
 
 	offsetIndex, err := OpenOffsetIndex(logger, basePath, startOffset)

@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	MESSAGE_SIZE_LIMIT = 16 * 1024 * 1024
-	SEGMENT_SIZE_LIMIT = 16 * 1024 * 1024
+	MESSAGE_SIZE_LIMIT      = 16 * 1024 * 1024
+	SEGMENT_SIZE_LIMIT      = 16 * 1024 * 1024
+	MAX_SEGMENT_AGE_SECONDS = 30 * 86400
 )
 
 type LogEntryChannel chan *internal.TopicAndLog
@@ -46,6 +47,7 @@ type FileLog struct {
 	nextOffset          uint64
 	segments            []logSegment
 	currentSegment      logSegment
+	closeCh             chan bool
 }
 
 type LogFilter struct {
@@ -207,6 +209,7 @@ func (fl *FileLog) Close() error {
 	}
 
 	fl.closed = true
+	fl.closeCh <- true
 
 	return nil
 }
@@ -215,16 +218,94 @@ func (fl *FileLog) rollLogIfNecessary() error {
 	// Called from write lock
 	// TODO config
 	if fl.currentSegment.SizeBytes() >= SEGMENT_SIZE_LIMIT {
-		newSegment, err := openSegment(fl.logger, fl.basePath, fl.nextOffset)
-		if err != nil {
+		if err := fl.rollLog(); err != nil {
 			return err
 		}
-		fl.currentSegment = newSegment
-
-		fl.segments = append(fl.segments, fl.currentSegment)
 	}
 
 	return nil
+}
+
+func (fl *FileLog) rollLog() error {
+	// If current log is empty, skip
+	if fl.currentSegment.SizeBytes() == 0 {
+		return nil
+	}
+
+	newSegment, err := openSegment(fl.logger, fl.basePath, fl.nextOffset)
+	if err != nil {
+		return err
+	}
+	fl.currentSegment = newSegment
+
+	fl.segments = append(fl.segments, fl.currentSegment)
+
+	return nil
+}
+
+func (fl *FileLog) reapSegments() error {
+	// Check if any segments need reaping
+	fl.RLock()
+	var index = -1
+	{
+		horizon := time.Now().Add(-1 * MAX_SEGMENT_AGE_SECONDS * time.Second)
+		for i, segment := range fl.segments {
+			if segment.EndTime().Before(horizon) && segment.SizeBytes() > 0 {
+				fl.logger.Debugf("Found segment to remove: %v", segment)
+				index = i
+			} else {
+				break
+			}
+		}
+	}
+	fl.RUnlock()
+
+	// Found segments to reap
+	if index >= 0 {
+		fl.Lock()
+		defer fl.Unlock()
+		for i := 0; i <= index; i++ {
+			// If we only have one segment (or will have zero segments), roll the log first
+			if len(fl.segments) == 1 || index == len(fl.segments)-1 {
+				fl.logger.Debugf("Only have %d segments, want to remove %d. Rolling log.", len(fl.segments), index+1)
+				fl.rollLog()
+			}
+
+			// If we still have one segment, it's empty. Abort.
+			if len(fl.segments) == 1 {
+				fl.logger.Debugf("Only have a single empty segment, skipping reap.")
+				return nil
+			}
+
+			if err := fl.segments[i].Delete(); err != nil {
+				return errors.Wrap(err, "Error reaping segment")
+			}
+			// Allow segment to be GC'd
+			fl.segments[i] = nil
+		}
+
+		fl.segments = fl.segments[index+1:]
+	}
+
+	return nil
+}
+
+func (fl *FileLog) logMaintenance() {
+	// Periodic maintenance of logs, removing older segments beyond the retention horizon
+	for {
+		timer := time.NewTimer(300 * time.Second)
+		select {
+		case <-timer.C:
+			fl.logger.Info("Periodic maintenance starting.")
+			if err := fl.reapSegments(); err != nil {
+				fl.logger.Errorf("Error reaping segments: %v", err)
+			}
+		case <-fl.closeCh:
+			fl.logger.Info("Stopping periodic maintenance.")
+			timer.Stop()
+			break
+		}
+	}
 }
 
 func OpenLogs(logger *zap.SugaredLogger, directory string) (map[string]Log, error) {
@@ -346,8 +427,10 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 		logger:              ctxLogger,
 		segments:            segments,
 		currentSegment:      lastSegment,
+		closeCh:             make(chan bool),
 	}
 
+	go fl.logMaintenance()
 
 	return fl, nil
 }

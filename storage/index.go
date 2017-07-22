@@ -1,14 +1,11 @@
 package storage
 
 import (
-	// "bufio"
-	"errors"
-	// "github.com/xorlev/slogd/internal"
+	"encoding/binary"
 	"fmt"
+	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"io"
-	// "io/ioutil"
-	"encoding/binary"
 	"math"
 	"os"
 	"path"
@@ -21,6 +18,7 @@ type Index interface {
 	Size() int
 	SizeBytes() uint64
 	Truncate() error
+	Delete() error
 	Flush() error
 	Close() error
 }
@@ -166,6 +164,22 @@ func (fi *fileIndex) Truncate() error {
 	}
 	if _, err := fi.file.Seek(0, io.SeekStart); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (fi *fileIndex) Delete() error {
+	fi.Lock()
+	defer fi.Unlock()
+
+	fi.Flush()
+	if err := fi.file.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Remove(fi.filename); err != nil {
+		return errors.Wrap(err, "Unable to remove index.")
 	}
 
 	return nil
