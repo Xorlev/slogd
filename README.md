@@ -52,6 +52,17 @@ By default, segments are created every 6 hours or 16MiB. Each segment has two ac
 an index on offset and an index on publish timestamp. These allow for efficiently seeking through
 the log.
 
+### Durability
+
+Slogd provides some durability guarantees. Upon receipt of an successful AppendLogs response, the data
+in the request has been flushed to disk. However, it is possible that a large batch of messages may
+trigger an early flush of data to disk. If slogd were to exit before a final flush, it may lead to some
+messages being persisted and some lost messages, though should never result in corrupt segments. In that
+case, the client would not have received a successful response and would retry the request.
+
+Slogd may opt to implement transactional semantics in the future (prepare, append, {commit/abort}) to provide
+stronger guarantees wherein an entire batch of messages will be committed to the log or not at all.
+
 ### Messages
 
 Individual messages (slogd.LogEntry) have 5 different fields:

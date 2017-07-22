@@ -96,7 +96,7 @@ func (fl *FileLog) LogChannel() LogEntryChannel {
 	return fl.messagesWithOffsets
 }
 
-func (fl *FileLog) Retrieve(ctx context.Context, req *LogFilter) ([]*pb.LogEntry, *Continuation, error) {
+func (fl *FileLog) Retrieve(ctx context.Context, lf *LogFilter) ([]*pb.LogEntry, *Continuation, error) {
 	logEntries := make([]*pb.LogEntry, 0)
 	scannedLogs := 0
 
@@ -117,13 +117,13 @@ func (fl *FileLog) Retrieve(ctx context.Context, req *LogFilter) ([]*pb.LogEntry
 
 		// TODO: add EndTimestamp?
 		// Evaluate LogFilter against segment
-		segmentMatches, err := req.SegmentPassesFilter(segment)
+		segmentMatches, err := lf.SegmentPassesFilter(segment)
 		if err != nil {
 			return nil, nil, err
 		}
 
-		if segmentMatches && messagesRead < req.MaxMessages {
-			segmentLogs, scanned, _, err := segment.Retrieve(ctx, req, -1, req.MaxMessages-messagesRead)
+		if segmentMatches && messagesRead < lf.MaxMessages {
+			segmentLogs, scanned, _, err := segment.Retrieve(ctx, lf, -1, lf.MaxMessages-messagesRead)
 			if err != nil {
 				return nil, nil, errors.Wrap(err, "Error reading from segment")
 			}
@@ -179,6 +179,7 @@ func (fl *FileLog) Append(ctx context.Context, logs []*pb.LogEntry) ([]uint64, e
 	fl.Lock()
 	defer fl.Unlock()
 
+	// Append each log individually, assign offsets to each
 	newOffsets := make([]uint64, len(logs))
 	for i, log := range logs {
 		if log != nil {
@@ -191,6 +192,8 @@ func (fl *FileLog) Append(ctx context.Context, logs []*pb.LogEntry) ([]uint64, e
 		}
 	}
 
+	// Flush the file for durability
+	// TODO: setting to allow flush on each append
 	fl.currentSegment.Flush()
 
 	// Roll log segment if necessary
