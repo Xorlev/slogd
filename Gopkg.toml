@@ -20,7 +20,12 @@
 #  name = "github.com/x/y"
 #  version = "2.4.0"
 
-required = ["github.com/uber-go/zap", "github.com/pkg/errors"]
+required = [
+	"github.com/uber-go/zap", 
+	"github.com/pkg/errors",
+	"google.golang.org/grpc",
+	"github.com/spf13/cobra",
+]
 
 [[constraint]]
   name = "github.com/pkg/errors"
