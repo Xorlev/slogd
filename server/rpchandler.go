@@ -84,8 +84,9 @@ func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 
 	s.Lock()
 	topic, ok := s.topics[req.GetTopic()]
+
+	// Auto-create new topic
 	if !ok {
-		// TODO fix subscriber agg channel
 		log, err := storage.NewFileLog(s.logger, s.config.DataDir, req.GetTopic())
 
 		if err != nil {
@@ -166,12 +167,51 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 	return nil
 }
 
-// really, go?
-func min(a, b uint64) uint64 {
-	if a < b {
-		return a
+func (s *StructuredLogServer) Close() error {
+	s.Lock()
+	defer s.Unlock()
+
+	for _, log := range s.topics {
+		log.Close()
 	}
-	return b
+
+	return nil
+}
+
+// Publishes messages from all topic channels to single channel
+func (s *StructuredLogServer) startTopicWatcher(log storage.Log) {
+	s.logger.Debugf("Starting topic watcher: %s", log.Name())
+	go func(c storage.LogEntryChannel) {
+		for msg := range c {
+			s.logger.Debugf("Received message from topic channel: %s, %+v", log.Name(), msg)
+			s.fanin <- msg
+		}
+	}(log.LogChannel())
+}
+
+// Reads fanin channel, identifies interested subscribers (StreamLogs clients)
+// and notifies them that new logs are available for consumptuon
+func (s *StructuredLogServer) pubsubListener() {
+	s.logger.Info("Starting pubsub listener..")
+	for {
+		for log := range s.fanin {
+			s.logger.Debugf("Published log: %+v", log)
+
+			s.RLock()
+			val, ok := s.subscribers[log.Topic]
+			if ok {
+				for _, subscriber := range val {
+					select {
+					case subscriber <- log:
+						// Noop
+					default:
+						// Skip
+					}
+				}
+			}
+			s.RUnlock()
+		}
+	}
 }
 
 func (s *StructuredLogServer) addSubscriber(req *pb.GetLogsRequest, clientID uint64) storage.LogEntryChannel {
@@ -197,34 +237,7 @@ func (s *StructuredLogServer) removeSubscriber(req *pb.GetLogsRequest, clientID 
 	delete(s.subscribers[req.GetTopic()], clientID)
 }
 
-func (s *StructuredLogServer) pubsubStub() {
-	s.logger.Info("Starting pubsub listener..")
-	for {
-		for log := range s.fanin {
-			s.logger.Debugf("Published log: %+v", log)
-
-			s.RLock()
-			val, ok := s.subscribers[log.Topic]
-			if ok {
-				for _, subscriber := range val {
-					select {
-					case subscriber <- log:
-						// Noop
-					default:
-						// Skip
-					}
-				}
-			}
-			s.RUnlock()
-		}
-	}
-}
-
 func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*StructuredLogServer, error) {
-	// Read all topics (folder in storage dir)
-	// Spin off Goroutine for each topic
-	// Start server, protect with RWLock
-
 	logger.Infow("Data dir",
 		"data_dir", config.DataDir,
 	)
@@ -249,26 +262,4 @@ func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*StructuredLogSer
 	go s.pubsubStub()
 
 	return s, nil
-}
-
-func (s *StructuredLogServer) startTopicWatcher(log storage.Log) {
-	s.logger.Debugf("Starting topic watcher: %s", log.Name())
-	go func(c storage.LogEntryChannel) {
-		for msg := range c {
-			s.logger.Debugf("Received message from topic channel: %s, %+v", log.Name(), msg)
-			s.fanin <- msg
-			s.logger.Debugf("Post-fanin publish")
-		}
-	}(log.LogChannel())
-}
-
-func (s *StructuredLogServer) Close() error {
-	s.Lock()
-	defer s.Unlock()
-
-	for _, log := range s.topics {
-		log.Close()
-	}
-
-	return nil
 }

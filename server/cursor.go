@@ -13,8 +13,8 @@ type cursor struct {
 }
 
 func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
+	// Page through log until no more messages show up, then return control to caller
 	for {
-		// read pages, go to sleep until dirty bit is set, read pages
 		filter := &storage.LogFilter{
 			StartOffset: c.lastOffset + 1,
 			MaxMessages: 1000,
@@ -33,6 +33,7 @@ func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
 			}
 		}
 
+		// If we didn't get any new logs, we're done
 		if len(initial) == 0 || lastOffset == c.lastOffset {
 			return nil
 		}
