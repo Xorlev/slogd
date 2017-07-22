@@ -78,6 +78,10 @@ func (lf *LogFilter) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
 	return true, nil
 }
 
+func (lf *LogFilter) SegmentPassesFilter(segment logSegment) (bool, error) {
+	return segment.EndOffset() > lf.StartOffset, nil
+}
+
 type Continuation struct {
 	LastOffsetRead uint64
 	FilePosition   uint64
@@ -102,6 +106,8 @@ func (fl *FileLog) Retrieve(ctx context.Context, req *LogFilter) ([]*pb.LogEntry
 	fl.RUnlock()
 
 	// TODO: race between logfile reaper and segment retrieval
+	// Find the covering set of segments with messages that fit our LogFilter, then ask for messages up to
+	// the number of messages requested. May span multiple segments.
 	for _, segment := range segments {
 		if ctx.Err() != nil {
 			return nil, nil, ctx.Err()
@@ -110,7 +116,13 @@ func (fl *FileLog) Retrieve(ctx context.Context, req *LogFilter) ([]*pb.LogEntry
 		messagesRead := uint32(len(logEntries))
 
 		// TODO: add EndTimestamp?
-		if segment.EndOffset() > req.StartOffset && messagesRead < req.MaxMessages {
+		// Evaluate LogFilter against segment
+		segmentMatches, err := req.SegmentPassesFilter(segment)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if segmentMatches && messagesRead < req.MaxMessages {
 			segmentLogs, scanned, _, err := segment.Retrieve(ctx, req, -1, req.MaxMessages-messagesRead)
 			if err != nil {
 				return nil, nil, errors.Wrap(err, "Error reading from segment")
