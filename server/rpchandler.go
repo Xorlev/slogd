@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/gogo/protobuf/types"
 	pb "github.com/xorlev/slogd/proto"
 	storage "github.com/xorlev/slogd/storage"
 	"go.uber.org/zap"
@@ -9,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type StructuredLogServer struct {
@@ -26,8 +28,6 @@ type StructuredLogServer struct {
 }
 
 func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*pb.GetLogsResponse, error) {
-	//clientID := atomic.AddUint64(&s.clientID, 1)
-
 	resp := &pb.GetLogsResponse{}
 	s.logger.Debugw("Processing GetLogs call",
 		"request", req,
@@ -38,12 +38,28 @@ func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 	s.RUnlock()
 
 	if ok {
+		var t time.Time = time.Time{}
+
+		if req.GetTimestamp() != nil {
+			var err error = nil
+			t, err = types.TimestampFromProto(req.GetTimestamp())
+			if err != nil {
+				return nil, grpc.Errorf(codes.InvalidArgument, "Bad timestamp: %+v", err)
+			}
+		}
+
 		filter := &storage.LogFilter{
 			StartOffset: req.GetOffset(),
 			MaxMessages: uint32(req.GetMaxMessages()),
+			Timestamp:   t,
 		}
+
 		logs, _, err := topic.Retrieve(ctx, filter)
 		if err != nil {
+			s.logger.Errorw("Failed to retrieve logs",
+				"req", req,
+				"err", err,
+			)
 			return nil, grpc.Errorf(codes.Internal, "Error retrieving logs: %v", err)
 		}
 
@@ -59,7 +75,6 @@ func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 	if !isValidTopic(req.GetTopic()) {
 		return nil, grpc.Errorf(codes.InvalidArgument, "Topic must conform to pattern [a-z0-9_\\-.]+")
 	}
-	//clientID := atomic.AddUint64(&s.clientID, 1)
 
 	resp := &pb.AppendResponse{}
 
@@ -103,13 +118,6 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 		"request", req,
 	)
 
-	// TODO initial GetLogs to replay to now(), then stream
-	// page 100 messages at a time, streaming messages, maintain max offset
-	// once page is <100 messages, register subscriber,
-	// wait for subscriber to have message, check if offset is max+1, if so deliver and hand to for/select
-	// otherwise do one last GetLogs before for/select
-	// once a page is < 100 messages, start a consumer
-
 	s.RLock()
 	topic, ok := s.topics[req.GetTopic()]
 	s.RUnlock()
@@ -142,20 +150,6 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 				if err := c.consume(topic, stream.SendMsg); err != nil {
 					return err
 				}
-
-				// 	response := &pb.GetLogsResponse{
-				// 		Logs: []*pb.LogEntry{log.LogEntry},
-				// 	}
-
-				// 	if err := stream.SendMsg(response); err != nil {
-				// 		s.logger.Errorw("Failed to send message",
-				// 			"err", err,
-				// 			"clientID", clientID,
-				// 		)
-
-				// 		s.removeSubscriber(req, clientID)
-				// 		return err
-				// 	}
 			}
 		}
 
