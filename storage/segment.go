@@ -177,10 +177,10 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 	if err != nil {
 		return err
 	}
-	if s.startTime == nil || logTimestamp.Before(*s.startTime) {
+	if s.startTime.IsZero() || logTimestamp.Before(*s.startTime) {
 		s.startTime = &logTimestamp
 	}
-	if s.endTime == nil || logTimestamp.After(*s.endTime) {
+	if s.endTime.IsZero() || logTimestamp.After(*s.endTime) {
 		s.endTime = &logTimestamp
 	}
 

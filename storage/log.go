@@ -18,9 +18,16 @@ import (
 )
 
 const (
-	MESSAGE_SIZE_LIMIT      = 16 * 1024 * 1024
-	SEGMENT_SIZE_LIMIT      = 16 * 1024 * 1024
-	MAX_SEGMENT_AGE_SECONDS = 30 * 86400
+	MESSAGE_SIZE_LIMIT = 16 * 1024 * 1024
+	SEGMENT_SIZE_LIMIT = 16 * 1024 * 1024
+
+	// Force log roll at this time
+	MIN_SEGMENT_AGE = 6 * time.Hour
+
+	// Remove segments after this time
+	STALE_SEGMENT_AGE = 720 * time.Hour // 30 days
+
+	LOG_MAINTENANCE_PERIOD = 5 * time.Minute
 )
 
 type LogEntryChannel chan *internal.TopicAndLog
@@ -216,8 +223,9 @@ func (fl *FileLog) Close() error {
 
 func (fl *FileLog) rollLogIfNecessary() error {
 	// Called from write lock
-	// TODO config
-	if fl.currentSegment.SizeBytes() >= SEGMENT_SIZE_LIMIT {
+	segmentAgeHorizon := time.Now().Add(-MIN_SEGMENT_AGE)
+
+	if fl.currentSegment.SizeBytes() >= SEGMENT_SIZE_LIMIT || fl.currentSegment.StartTime().Before(segmentAgeHorizon) {
 		if err := fl.rollLog(); err != nil {
 			return err
 		}
@@ -244,14 +252,14 @@ func (fl *FileLog) rollLog() error {
 }
 
 func (fl *FileLog) reapSegments() error {
-	// Check if any segments need reaping
+	// Check if any stale segments need reaping
 	fl.RLock()
 	var index = -1
 	{
-		horizon := time.Now().Add(-1 * MAX_SEGMENT_AGE_SECONDS * time.Second)
+		horizon := time.Now().Add(-STALE_SEGMENT_AGE)
 		for i, segment := range fl.segments {
 			if segment.EndTime().Before(horizon) && segment.SizeBytes() > 0 {
-				fl.logger.Debugf("Found segment to remove: %v", segment)
+				fl.logger.Debugf("Found stale segment to remove: %v", segment)
 				index = i
 			} else {
 				break
@@ -293,13 +301,17 @@ func (fl *FileLog) reapSegments() error {
 func (fl *FileLog) logMaintenance() {
 	// Periodic maintenance of logs, removing older segments beyond the retention horizon
 	for {
-		timer := time.NewTimer(300 * time.Second)
+		timer := time.NewTimer(LOG_MAINTENANCE_PERIOD)
 		select {
 		case <-timer.C:
 			fl.logger.Info("Periodic maintenance starting.")
 			if err := fl.reapSegments(); err != nil {
 				fl.logger.Errorf("Error reaping segments: %v", err)
 			}
+			if err := fl.rollLogIfNecessary(); err != nil {
+				fl.logger.Errorf("Error rolling logs: %v", err)
+			}
+
 		case <-fl.closeCh:
 			fl.logger.Info("Stopping periodic maintenance.")
 			timer.Stop()
