@@ -11,10 +11,8 @@ var (
 
 var RootCmd = &cobra.Command{
 	Use:   "slogd",
-	Short: "Hugo is a very fast static site generator",
-	Long: `A Fast and Flexible Static Site Generator built with
-                love by spf13 and friends in Go.
-                Complete documentation is available at http://hugo.spf13.com`,
+	Short: "slogd is a lightweight structured logging daemon",
+	Long:  "slogd is a lightweight structured logging daemon exposed via HTTP and gRPC",
 	Run: func(cmd *cobra.Command, args []string) {
 		// Do Stuff Here
 	},

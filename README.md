@@ -44,12 +44,33 @@ segment.
 
 Topics are comprised of multiple segments. Segments are contiguous sections of logfile which are
 created as each segment becomes too old or too big. slogd attempts to retain data no longer than
-the topic is configured for. Segment age is determined via file metadata, touching the file mtime
-of a segment will "reset the clock" on a given segment.
+the topic is configured for. Segment age (for purposes of removal) is determined by the timestamp
+of the newest message, whereas segment max age (oldest a segment is before a new segment is created)
+is evaluated on the timestamp of the oldest message.
 
-By default, segments are created every 6 hours or 100mb. Each segment has two accompanying indices,
+By default, segments are created every 6 hours or 16MiB. Each segment has two accompanying indices,
 an index on offset and an index on publish timestamp. These allow for efficiently seeking through
 the log.
+
+### Messages
+
+Individual messages (slogd.LogEntry) have 5 different fields:
+
+1) Offset. This is assigned by slogd at publish time, a monotonically increasing 64-bit integer.
+This represents the order the message has in the topic. Offset 0 is the first message, offset 1 the
+second and so on.
+
+2) Timestamp. This is assigned by slogd at publish time, also monotonically increasing. That is,
+m[n].timestamp < m[n+1].timestamp for all messages in the log. TODO: semantics around same-time delivery.
+
+3) Payload. This is actually 2 fields: `protobuf` and `raw_bytes`. Only one may be set at any
+given time (proto3 oneof). `protobuf` is a `google.protobuf.Any` type, whereas `raw_bytes` is,
+well, raw bytes.
+
+4) Annotations. This is a map of string to string KV pairs. These can be used to have slogd filter
+messages at retrieval time. For instance, `userid -> 5` could be matched using an expression `k:userid v:5`,
+but expressions may be arbitrarily complex. Individual clauses are Golang regexp and can be combined together, e.x.
+`(k:userid v:vip\-[0-9]+) OR (k:important)`. 
 
 ### Message types
 
@@ -62,8 +83,10 @@ stored and read from the given log.
 Like Kafka, slogd defaults to a 7 day retention period on log segments. This retention period is a
 lower bound; a low-traffic segment may take longer to be purged. As segment age is determined by
 last modification and not initial creation, data will last at least the retention period, but may
-last longer. If segments are created every 6 hours, the oldest data will last at most 7 days, 6 hours
-before being purged.
+last longer. If segments are created every 6 hours, topic retention is 7 days, and the segment reaper
+runs every 5 minutes, the oldest data be at worst 7 days, 6 hours, and 5 minutes old.
+
+By tuning the max_segment_age, you can adjust the upper bound on data age.
 
 ## RPC methods
 
@@ -97,7 +120,6 @@ and consume until reaching the end of the log.
 
 - [ ] Cursors should be able to page reads without invoking index lookup
 - [ ] Timed log roller process
-- [ ] Segment reaper
 - [ ] Consumer CLI tool
 - [ ] Configuration file
 - [ ] Topic configuration

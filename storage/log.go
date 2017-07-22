@@ -101,6 +101,7 @@ func (fl *FileLog) Retrieve(ctx context.Context, req *LogFilter) ([]*pb.LogEntry
 	copy(segments, fl.segments)
 	fl.RUnlock()
 
+	// TODO: race between logfile reaper and segment retrieval
 	for _, segment := range segments {
 		if ctx.Err() != nil {
 			return nil, nil, ctx.Err()
@@ -120,7 +121,7 @@ func (fl *FileLog) Retrieve(ctx context.Context, req *LogFilter) ([]*pb.LogEntry
 		}
 	}
 
-	fl.logger.Debugf("Scanned %d logs for %d returned messages",
+	fl.logger.Infof("Scanned %d logs for %d returned messages",
 		scannedLogs, len(logEntries))
 
 	return logEntries, nil, nil
@@ -225,6 +226,7 @@ func (fl *FileLog) rollLogIfNecessary() error {
 	// Called from write lock
 	segmentAgeHorizon := time.Now().Add(-MIN_SEGMENT_AGE)
 
+	// If segment is too big or was created too long ago, roll the log
 	if fl.currentSegment.SizeBytes() >= SEGMENT_SIZE_LIMIT || fl.currentSegment.StartTime().Before(segmentAgeHorizon) {
 		if err := fl.rollLog(); err != nil {
 			return err
@@ -240,6 +242,7 @@ func (fl *FileLog) rollLog() error {
 		return nil
 	}
 
+	// Open a new log segment
 	newSegment, err := openSegment(fl.logger, fl.basePath, fl.nextOffset)
 	if err != nil {
 		return err
@@ -273,21 +276,23 @@ func (fl *FileLog) reapSegments() error {
 		fl.Lock()
 		defer fl.Unlock()
 		for i := 0; i <= index; i++ {
-			// If we only have one segment (or will have zero segments), roll the log first
+			// If we only have one segment (or will have zero segments after reaping), roll the log first
 			if len(fl.segments) == 1 || index == len(fl.segments)-1 {
 				fl.logger.Debugf("Only have %d segments, want to remove %d. Rolling log.", len(fl.segments), index+1)
 				fl.rollLog()
 			}
 
-			// If we still have one segment, it's empty. Abort.
+			// If we still have one segment, it's empty. Nothing to do.
 			if len(fl.segments) == 1 {
 				fl.logger.Debugf("Only have a single empty segment, skipping reap.")
 				return nil
 			}
 
+			// Delete all the segments
 			if err := fl.segments[i].Delete(); err != nil {
 				return errors.Wrap(err, "Error reaping segment")
 			}
+
 			// Allow segment to be GC'd
 			fl.segments[i] = nil
 		}
@@ -305,9 +310,13 @@ func (fl *FileLog) logMaintenance() {
 		select {
 		case <-timer.C:
 			fl.logger.Info("Periodic maintenance starting.")
+
+			// Check if old segments need to be removed
 			if err := fl.reapSegments(); err != nil {
 				fl.logger.Errorf("Error reaping segments: %v", err)
 			}
+
+			// Check if the current log needs to be rolled (segment too old)
 			if err := fl.rollLogIfNecessary(); err != nil {
 				fl.logger.Errorf("Error rolling logs: %v", err)
 			}
