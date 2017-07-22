@@ -25,6 +25,7 @@ const (
 type LogEntryChannel chan *internal.TopicAndLog
 
 type Log interface {
+	Name() string
 	LogChannel() LogEntryChannel
 	Retrieve(context.Context, *LogFilter) ([]*pb.LogEntry, *Continuation, error)
 	ContinueRetrieve(context.Context, *Continuation) ([]*pb.LogEntry, error)
@@ -72,6 +73,10 @@ type Continuation struct {
 	LastOffsetRead uint64
 	FilePosition   uint64
 	LogFilter      *LogFilter
+}
+
+func (fl *FileLog) Name() string {
+	return fl.topic
 }
 
 func (fl *FileLog) LogChannel() LogEntryChannel {
@@ -168,7 +173,7 @@ func (fl *FileLog) Append(ctx context.Context, logs []*pb.LogEntry) ([]uint64, e
 
 	// Roll log segment if necessary
 	if err := fl.rollLogIfNecessary(); err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "Error rolling log")
 	}
 
 	// Publish to registered stream
@@ -237,7 +242,7 @@ func OpenLogs(logger *zap.SugaredLogger, directory string) (map[string]Log, erro
 
 			logs[topic], err = NewFileLog(logger, directory, topic)
 			if err != nil {
-				return nil, err
+				return nil, errors.Wrapf(err, "Error opening log: %s", topic)
 			}
 		}
 	}
@@ -272,7 +277,9 @@ func (nf ByNumericalFilename) Less(i, j int) bool {
 func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*FileLog, error) {
 	basePath := path.Join(directory, topic)
 
-	logger.Debugf("Base path: %v", basePath)
+	ctxLogger := logger.With(
+		"topic", topic,
+	)
 
 	exists, err := exists(basePath)
 	if err != nil {
@@ -298,28 +305,28 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 		// for each segment...
 		fls, err := openSegment(logger, basePath, 0)
 		if err != nil {
-			return nil, err
+			return nil, errors.Wrap(err, "Error creating new segment")
 		}
 
 		segments = append(segments, fls)
 	} else {
 		for _, entry := range entries { // TODO TODO sort numerically!
 			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
-				logger.Debugw("Opening segment",
-					"fileName", entry.Name(),
-					"topic", topic)
+				ctxLogger.Debugw("Opening segment",
+					"filename", entry.Name(),
+				)
 				startOffset, err := strconv.ParseUint(strings.TrimSuffix(entry.Name(), ".log"), 10, 64)
 				if err != nil {
-					return nil, err
+					return nil, errors.Wrap(err, "Error parsing log filename")
 				}
 
-				fls, err := openSegment(logger, basePath, startOffset)
+				fls, err := openSegment(ctxLogger, basePath, startOffset)
 				if err != nil {
-					return nil, err
+					return nil, errors.Wrapf(err, "Error opening segment: %s/%d.log", basePath, startOffset)
 				}
 
-				logger.Debugw("Opened segment",
-					"fileName", entry.Name(),
+				ctxLogger.Debugw("Opened segment",
+					"filename", entry.Name(),
 					"startOffset", fls.StartOffset(),
 					"endOffset", fls.EndOffset())
 
@@ -331,18 +338,16 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 	lastSegment := segments[len(segments)-1]
 	nextOffset := lastSegment.EndOffset()
 
-	logger.Infow("Initializing log",
-		"basePath", basePath,
-		"topic", topic,
-		"nextOffset", nextOffset,
-	)
-	return &FileLog{
+	fl := &FileLog{
 		basePath:            basePath,
 		topic:               topic,
 		nextOffset:          nextOffset,
 		messagesWithOffsets: make(LogEntryChannel),
-		logger:              logger,
+		logger:              ctxLogger,
 		segments:            segments,
 		currentSegment:      lastSegment,
-	}, nil
+	}
+
+
+	return fl, nil
 }

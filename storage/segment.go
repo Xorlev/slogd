@@ -59,40 +59,37 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, fil
 	}
 
 	startedAt := time.Now()
-	defer func() {
-		s.logger.Infof("Took %+v to scan segment", time.Since(startedAt))
-	}()
 
-	// Stupid inefficient
-	// TODO: seek to offset/timestamp bound
+	// Open new file handle for seeking
+	// TODO(xorlev): can these be safely pooled?
 	file, err := os.OpenFile(s.filename, os.O_RDONLY, 0666)
 	if err != nil {
-		return nil, 0, -1, err
+		return nil, 0, -1, errors.Wrap(err, "Failed to open segment file.")
 	}
 
+	// Determine where to start in the file
 	var positionStart uint64 = 0
-
 	if filePosition < 0 {
 		if logFilter.StartOffset > 0 {
 			// Seek to first position
 			var err error
 			positionStart, err = s.offsetIndex.Find(logFilter.StartOffset)
 			if err != nil {
-				return nil, 0, -1, err
+				return nil, 0, -1, errors.Wrap(err, "Failed to search index for start offset.")
 			}
 		} else if !logFilter.Timestamp.IsZero() {
 			s.logger.Warn("Timestamp indices have not yet been implemented, falling back to full log scans.")
 		}
 	} else {
+		// We were provided an explicit position (continuations for cursors), seek there
 		positionStart = uint64(filePosition)
 	}
 
 	s.logger.Debugf("Seeking to position %v", positionStart)
-
 	file.Seek(int64(positionStart), io.SeekStart)
 
+	// Read and collect messages from log
 	reader := NewDelimitedReader(bufio.NewReader(file), MESSAGE_SIZE_LIMIT)
-
 	logEntries := make([]*pb.LogEntry, 0)
 	scannedLogs := 0
 	for {
@@ -128,20 +125,22 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, fil
 		} else {
 			// Found the end of the log
 			if err == io.EOF {
-				s.logger.Debugf("End of log, EOF")
+				s.logger.Debugf("End of segment, EOF")
 				break
 			} else {
-				return nil, scannedLogs, -1, err
+				return nil, scannedLogs, -1, errors.Wrap(err, "Error while scanning segment")
 			}
 		}
 	}
 
-	finalPosition, err := file.Seek(0, io.SeekCurrent)
+	positionEnd, err := file.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return nil, 0, -1, err
+		return nil, scannedLogs, -1, errors.Wrap(err, "Failed to determine file position after scan")
 	}
 
-	return logEntries, scannedLogs, finalPosition, nil
+	s.logger.Infof("Took %+v to scan segment (%d logs scanned, %d bytes).", time.Since(startedAt), scannedLogs, positionEnd-int64(positionStart))
+
+	return logEntries, scannedLogs, positionEnd, nil
 }
 
 func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
@@ -175,7 +174,7 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 		s.positionOfLastIndex = s.filePosition
 	}
 
-	s.logger.Debugf("Appended: %+v, wrote %d bytes", log, s.filePosition-before)
+	s.logger.Debugf("Appended: %+v, wrote %d bytes.", log, s.filePosition-before)
 
 	return nil
 }
@@ -239,6 +238,10 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 		return nil, err
 	}
 
+	ctxLogger := logger.With(
+		"filename", filename,
+	)
+
 	nextOffset := startOffset
 	logEntry := &pb.LogEntry{}
 	reader := NewDelimitedReader(bufio.NewReader(file), MESSAGE_SIZE_LIMIT)
@@ -253,9 +256,7 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 		}
 
 		if logEntry.GetOffset() < nextOffset {
-			logger.Errorw("Log entry unexpected",
-				"basePath", basePath,
-				"startOffset", startOffset,
+			ctxLogger.Errorw("Log entry unexpected",
 				"logEntry_offset", logEntry.GetOffset(),
 			)
 			return nil, errors.New(fmt.Sprintf("Later log entry has lower offset than previous log entry: %d < %d", logEntry.GetOffset(), nextOffset))
