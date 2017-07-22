@@ -192,21 +192,20 @@ func (s *StructuredLogServer) addSubscriber(req *pb.GetLogsRequest, clientID uin
 
 func (s *StructuredLogServer) removeSubscriber(req *pb.GetLogsRequest, clientID uint64) {
 	s.Lock()
+	defer s.Unlock()
 	close(s.subscribers[req.GetTopic()][clientID])
 	delete(s.subscribers[req.GetTopic()], clientID)
-	s.Unlock()
 }
 
-func (s *StructuredLogServer) pubsubStub(logChannel storage.LogEntryChannel) {
+func (s *StructuredLogServer) pubsubStub() {
 	s.logger.Info("Starting pubsub listener..")
 	for {
-		for log := range logChannel {
+		for log := range s.fanin {
 			s.logger.Debugf("Published log: %+v", log)
 
 			s.RLock()
 			val, ok := s.subscribers[log.Topic]
 			if ok {
-				// non-blocking w/ select?
 				for _, subscriber := range val {
 					select {
 					case subscriber <- log:
@@ -240,22 +239,25 @@ func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*StructuredLogSer
 		logger:      logger,
 		topics:      topics,
 		subscribers: make(map[string]map[uint64]storage.LogEntryChannel),
+		fanin:       make(storage.LogEntryChannel),
 	}
 
-	agg := make(storage.LogEntryChannel)
 	for _, log := range topics {
 		s.startTopicWatcher(log)
 	}
 
-	go s.pubsubStub(agg)
+	go s.pubsubStub()
 
 	return s, nil
 }
 
 func (s *StructuredLogServer) startTopicWatcher(log storage.Log) {
+	s.logger.Debugf("Starting topic watcher: %s", log.Name())
 	go func(c storage.LogEntryChannel) {
 		for msg := range c {
+			s.logger.Debugf("Received message from topic channel: %s, %+v", log.Name(), msg)
 			s.fanin <- msg
+			s.logger.Debugf("Post-fanin publish")
 		}
 	}(log.LogChannel())
 }
