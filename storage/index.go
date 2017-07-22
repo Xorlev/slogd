@@ -23,6 +23,12 @@ type Index interface {
 	Close() error
 }
 
+const (
+	OFFSET_SIZE        = 8
+	FILE_POSITION_SIZE = 8
+	INDEX_SIZE         = OFFSET_SIZE + FILE_POSITION_SIZE
+)
+
 type fileIndex struct {
 	Index
 	sync.RWMutex
@@ -38,7 +44,7 @@ type fileIndex struct {
 }
 
 func (fi *fileIndex) Find(targetOffset uint64) (uint64, error) {
-	buffer := make([]byte, 16)
+	buffer := make([]byte, INDEX_SIZE)
 	file, err := os.OpenFile(fi.filename, os.O_CREATE|os.O_RDWR|os.O_SYNC, 0666)
 	if err != nil {
 		return 0, err
@@ -46,7 +52,6 @@ func (fi *fileIndex) Find(targetOffset uint64) (uint64, error) {
 
 	fi.RLock()
 	defer fi.RUnlock()
-	// var _ io.LimitedReader
 
 	// lowest without going over
 	// midpoint
@@ -102,14 +107,14 @@ func (fi *fileIndex) Find(targetOffset uint64) (uint64, error) {
 }
 
 func (fi *fileIndex) readEntryAt(file *os.File, position int64, buffer []byte) (uint64, uint64, error) {
-	file.Seek(position*16, io.SeekStart)
+	file.Seek(position*INDEX_SIZE, io.SeekStart)
 	n, err := file.Read(buffer)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	if n < 16 {
-		return 0, 0, errors.New("Tried to read index entry, less than 16 bytes read! Incomplete entry.")
+	if n < INDEX_SIZE {
+		return 0, 0, errors.New("Incomplete index entry.")
 	}
 
 	offset := binary.BigEndian.Uint64(buffer)
@@ -124,8 +129,8 @@ func (fi *fileIndex) IndexOffset(offset uint64, position int64) error {
 
 	fi.logger.Debugf("Indexing offset %d at file position %d", offset, position)
 
-	binary.BigEndian.PutUint64(fi.buffer[:8], offset)
-	binary.BigEndian.PutUint64(fi.buffer[8:], uint64(position))
+	binary.BigEndian.PutUint64(fi.buffer[:OFFSET_SIZE], offset)
+	binary.BigEndian.PutUint64(fi.buffer[OFFSET_SIZE:OFFSET_SIZE+FILE_POSITION_SIZE], uint64(position))
 
 	bytesWritten, err := fi.file.Write(fi.buffer)
 	if err != nil {
@@ -145,7 +150,7 @@ func (fi *fileIndex) IndexOffset(offset uint64, position int64) error {
 func (fi *fileIndex) Size() int {
 	fi.RLock()
 	defer fi.RUnlock()
-	return int(fi.filePosition) / 16
+	return int(fi.filePosition) / INDEX_SIZE
 }
 
 // Index size in bytes
@@ -241,7 +246,7 @@ func OpenOffsetIndex(logger *zap.SugaredLogger, basePath string, startOffset uin
 		filePosition: endOfFile,
 		startOffset:  startOffset,
 		endOffset:    startOffset,
-		buffer:       make([]byte, 16),
+		buffer:       make([]byte, INDEX_SIZE),
 	}
 
 	// If index is non-zero sized, figure out the last offset we have indexed
