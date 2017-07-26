@@ -8,6 +8,7 @@ import (
 	context "golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"os"
+	"time"
 )
 
 // produceCmd represents the produce command
@@ -48,12 +49,32 @@ tail -F /path/to/my/logfile | slogd produce --topic my-logfile`,
 
 		var buffer [][]byte = make([][]byte, 0)
 
+		ticker := time.NewTicker(1 * time.Second)
 		for {
-			line, more := <-lineCh
-			if more {
-				buffer = append(buffer, line)
+			select {
+			case line, more := <-lineCh:
+				if more {
+					buffer = append(buffer, line)
 
-				if len(buffer) >= 100 {
+					if len(buffer) >= 100 {
+						if err := sendEntries(client, buffer); err != nil {
+							fmt.Printf("Failed to send entries: %+v", err)
+							os.Exit(1)
+						}
+
+						buffer = make([][]byte, 0)
+					}
+				} else {
+					ticker.Stop()
+					if err := sendEntries(client, buffer); err != nil {
+						fmt.Printf("Failed to send entries: %+v", err)
+						os.Exit(1)
+					}
+					buffer = nil
+					break
+				}
+			case <-ticker.C:
+				if len(buffer) > 0 {
 					if err := sendEntries(client, buffer); err != nil {
 						fmt.Printf("Failed to send entries: %+v", err)
 						os.Exit(1)
@@ -61,14 +82,8 @@ tail -F /path/to/my/logfile | slogd produce --topic my-logfile`,
 
 					buffer = make([][]byte, 0)
 				}
-			} else {
-				if err := sendEntries(client, buffer); err != nil {
-					fmt.Printf("Failed to send entries: %+v", err)
-					os.Exit(1)
-				}
-				buffer = nil
-				break
 			}
+
 		}
 
 		fmt.Printf("Done")
