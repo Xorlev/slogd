@@ -5,7 +5,7 @@ as a first-class citizen.
 
 slogd aims to be a Kafka-like tool for the enthusiast developer, without the investment of
 running Zookeeper and Kafka on a single node. While the JVM can be tuned for lower resources,
-it will always be handily beat by a well-written Go program. slogd runs in approximately 10kb
+it will always be handily beat by a well-written Go program. slogd runs in approximately 14kb
 of memory.
 
 There are a lot of message daemons out there. There's servers that accept logs. But everything 
@@ -45,8 +45,8 @@ segment.
 Topics are comprised of multiple segments. Segments are contiguous sections of logfile which are
 created as each segment becomes too old or too big. slogd attempts to retain data no longer than
 the topic is configured for. Segment age (for purposes of removal) is determined by the timestamp
-of the newest message, whereas segment max age (oldest a segment is before a new segment is created)
-is evaluated on the timestamp of the oldest message.
+of the newest message, whereas segment creation time is evaluated on the timestamp of the oldest 
+message. Proactive segment rolling is based on segment creation time.
 
 By default, segments are created every 6 hours or 16MiB. Each segment has two accompanying indices,
 an index on offset and an index on publish timestamp. These allow for efficiently seeking through
@@ -130,7 +130,6 @@ and consume until reaching the end of the log.
 ## TODO
 
 - [ ] Cursors should be able to page reads without invoking index lookup
-- [ ] Timed log roller process
 - [ ] Consumer CLI tool
 - [ ] Configuration file
 - [ ] Topic configuration
