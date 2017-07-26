@@ -298,6 +298,14 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 	if err != nil {
 		return nil, err
 	}
+	parentDir, err := os.OpenFile(basePath, os.O_SYNC, 0666)
+	if err != nil {
+		return nil, err
+	}
+
+	// If we've just created the file, ensure the file metadata is persisted to disk. This requires fsyncing the directory.
+	file.Sync()
+	parentDir.Sync()
 
 	ctxLogger := logger.With(
 		"filename", filename,
