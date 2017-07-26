@@ -1,7 +1,6 @@
 package server
 
 import (
-	pb "github.com/xorlev/slogd/proto"
 	storage "github.com/xorlev/slogd/storage"
 	"golang.org/x/net/context"
 )
@@ -28,7 +27,7 @@ func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
 		lastOffset := c.lastOffset
 		for _, log := range initial {
 			lastOffset = log.GetOffset()
-			if err := f(toResponse(log)); err != nil {
+			if err := f(logToResponse(log)); err != nil {
 				return err
 			}
 		}
@@ -42,10 +41,4 @@ func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
 	}
 
 	return nil
-}
-
-func toResponse(log *pb.LogEntry) *pb.GetLogsResponse {
-	return &pb.GetLogsResponse{
-		Logs: []*pb.LogEntry{log},
-	}
 }
