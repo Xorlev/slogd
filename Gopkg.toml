@@ -39,3 +39,7 @@ required = [
 [[constraint]]
   name = "github.com/uber-go/zap"
   version = "1.4.1"
+
+[[override]]
+  name = "github.com/grpc-ecosystem/grpc-gateway"
+  branch = "master"
