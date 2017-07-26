@@ -34,6 +34,14 @@ You probably shouldn't yet. It's a "scratch an itch" kind of project. It might d
 in the future, but there's already bulletproof infrastructure written by the true professionals,
 aka the Kafka team.
 
+## Building
+
+1) First get [dep](https://github.com/golang/dep) from Github.
+2) Then you can run `dep ensure` in the slogd directory to vendor all dependencies at the versions specified.
+3) You'll also need to download protobuf 3. There's a handy script under vendor/github.com/gogo/protobuf to install protobuf.
+4) Run `./install_bin_deps.sh` which will install `protoc-gen-gofast`, `protoc-gen-grpc`, and `protoc-gen-grpc-gateway` from vendor.
+
+
 ## Concepts
 
 ### Topics
