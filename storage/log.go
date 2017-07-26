@@ -233,6 +233,7 @@ func (fl *FileLog) Close() error {
 
 	fl.closed = true
 	fl.closeCh <- true
+	close(fl.messagesWithOffsets)
 
 	return nil
 }

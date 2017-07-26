@@ -175,6 +175,12 @@ func (s *StructuredLogServer) Close() error {
 		log.Close()
 	}
 
+	for _, subscribers := range s.subscribers {
+		for _, channel := range subscribers {
+			close(channel)
+		}
+	}
+
 	return nil
 }
 
@@ -259,7 +265,7 @@ func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*StructuredLogSer
 		s.startTopicWatcher(log)
 	}
 
-	go s.pubsubStub()
+	go s.pubsubListener()
 
 	return s, nil
 }
