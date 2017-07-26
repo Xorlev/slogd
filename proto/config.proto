@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package slogd;
+
+option java_package = "slog.proto";
+option java_multiple_files = true;
+option java_generate_equals_and_hash = true;
+
+option go_package = "proto";
+
+/*
+	MESSAGE_SIZE_LIMIT = 16 * 1024 * 1024
+	SEGMENT_SIZE_LIMIT = 16 * 1024 * 1024
+
+	// Force log roll at this time
+	MIN_SEGMENT_AGE = 6 * time.Hour
+
+	// Remove segments after this time
+	STALE_SEGMENT_AGE = 720 * time.Hour // 30 days
+
+	LOG_MAINTENANCE_PERIOD = 5 * time.Minute
+*/
+message TopicConfig {
+	uint64 message_size_limit = 1;
+
+	// Size in bytes at which a segment will be closed and a new segment opened.
+	// Best effort: a segment may be up to message_size_limit-1 larger than
+	// segment_size_limit (imagine: a segment of size segment_size_limit-1)
+	uint64 segment_size_limit = 2;
+
+	// Rotate this segment after this period of time
+	uint64 rotate_segment_after_seconds = 3;
+
+	// Period before a segment is considered stale and purged from the filesystem.
+	uint64 stale_segment_seconds = 4;
+
+	// Period between runs of maintenance tasks (e.g. log roller, stale segment remover)
+	uint64 log_maintenance_period = 5;
+}

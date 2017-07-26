@@ -18,16 +18,8 @@ import (
 )
 
 const (
+	// TODO: enforce at segment level
 	MESSAGE_SIZE_LIMIT = 16 * 1024 * 1024
-	SEGMENT_SIZE_LIMIT = 16 * 1024 * 1024
-
-	// Force log roll at this time
-	MIN_SEGMENT_AGE = 6 * time.Hour
-
-	// Remove segments after this time
-	STALE_SEGMENT_AGE = 720 * time.Hour // 30 days
-
-	LOG_MAINTENANCE_PERIOD = 5 * time.Minute
 )
 
 type LogEntryChannel chan *internal.TopicAndLog
@@ -46,6 +38,7 @@ type FileLog struct {
 	Log
 	sync.RWMutex
 
+	config              *pb.TopicConfig
 	logger              *zap.SugaredLogger
 	basePath            string
 	closed              bool
@@ -240,10 +233,12 @@ func (fl *FileLog) Close() error {
 
 func (fl *FileLog) rollLogIfNecessary() error {
 	// Called from write lock
-	segmentAgeHorizon := time.Now().Add(-MIN_SEGMENT_AGE)
+
+	rotateSegmentAfterSeconds := time.Duration(fl.config.RotateSegmentAfterSeconds) * time.Second
+	segmentAgeHorizon := time.Now().Add(-rotateSegmentAfterSeconds)
 
 	// If segment is too big or was created too long ago, roll the log
-	if fl.currentSegment.SizeBytes() >= SEGMENT_SIZE_LIMIT || fl.currentSegment.StartTime().Before(segmentAgeHorizon) {
+	if fl.currentSegment.SizeBytes() >= fl.config.SegmentSizeLimit || fl.currentSegment.StartTime().Before(segmentAgeHorizon) {
 		if err := fl.rollLog(); err != nil {
 			return err
 		}
@@ -275,7 +270,8 @@ func (fl *FileLog) reapSegments() error {
 	fl.RLock()
 	var index = -1
 	{
-		horizon := time.Now().Add(-STALE_SEGMENT_AGE)
+		staleSegmentAge := time.Duration(fl.config.StaleSegmentSeconds) * time.Second
+		horizon := time.Now().Add(-staleSegmentAge)
 		for i, segment := range fl.segments {
 			if segment.EndTime().Before(horizon) && segment.SizeBytes() > 0 {
 				fl.logger.Debugf("Found stale segment to remove: %v", segment)
@@ -321,7 +317,7 @@ func (fl *FileLog) reapSegments() error {
 
 func (fl *FileLog) logMaintenance() {
 	// Periodic maintenance of logs, removing older segments beyond the retention horizon
-	ticker := time.NewTicker(LOG_MAINTENANCE_PERIOD)
+	ticker := time.NewTicker(time.Duration(fl.config.LogMaintenancePeriod) * time.Second)
 	for {
 		select {
 		case <-ticker.C:
@@ -395,6 +391,9 @@ func (nf ByNumericalFilename) Less(i, j int) bool {
 func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*FileLog, error) {
 	basePath := path.Join(directory, topic)
 
+	// TODO: read config from disk
+	config := defaultConfig()
+
 	ctxLogger := logger.With(
 		"topic", topic,
 	)
@@ -457,6 +456,7 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 	nextOffset := lastSegment.EndOffset()
 
 	fl := &FileLog{
+		config:              config,
 		basePath:            basePath,
 		topic:               topic,
 		nextOffset:          nextOffset,
@@ -467,7 +467,24 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 		closeCh:             make(chan bool),
 	}
 
+	ctxLogger.Infow("Opened log",
+		"config", fl.config,
+		"nextOffset", nextOffset,
+		"segments", len(segments),
+		"logsActive", segments[len(segments)-1].EndOffset()-segments[0].StartOffset(),
+	)
+
 	go fl.logMaintenance()
 
 	return fl, nil
+}
+
+func defaultConfig() *pb.TopicConfig {
+	return &pb.TopicConfig{
+		MessageSizeLimit:          4 * 1024 * 1024,
+		SegmentSizeLimit:          16 * 1024 * 1024,
+		RotateSegmentAfterSeconds: 6 * 3600,
+		StaleSegmentSeconds:       720 * 3600,
+		LogMaintenancePeriod:      300,
+	}
 }
