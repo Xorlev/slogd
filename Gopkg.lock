@@ -15,6 +15,12 @@
 
 [[projects]]
   branch = "master"
+  name = "github.com/grpc-ecosystem/go-grpc-middleware"
+  packages = ["."]
+  revision = "f63a7dfb64c138bd93d5c5b896d8b33c4b08e000"
+
+[[projects]]
+  branch = "master"
   name = "github.com/grpc-ecosystem/grpc-gateway"
   packages = ["runtime","runtime/internal","utilities"]
   revision = "f2862b476edcef83412c7af8687c9cd8e4097c0f"
@@ -94,6 +100,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "98dc59a92a4fe4f7544964438e50786b3b36a02bf76986dedd991a8f5eac2321"
+  inputs-digest = "7281f3076babd9b8f2e20a7de5e29e559ce0dacdf1595c424a502a68fdbc7117"
   solver-name = "gps-cdcl"
   solver-version = 1

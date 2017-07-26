@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_zap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -82,7 +84,13 @@ func run(logger *zap.SugaredLogger) error {
 
 	logger.Infof("Starting RPC listener on %s", rpcAddr)
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(
+		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+			grpc_zap.StreamServerInterceptor(logger.Desugar()),
+		)),
+		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			grpc_zap.UnaryServerInterceptor(logger.Desugar()),
+		)))
 
 	config := &server.Config{
 		DataDir: dataDir,
