@@ -40,6 +40,8 @@ aka the Kafka team.
 2) Then you can run `dep ensure` in the slogd directory to vendor all dependencies at the versions specified.
 3) You'll also need to download protobuf 3. There's a handy script under vendor/github.com/gogo/protobuf to install protobuf.
 4) Run `./install_bin_deps.sh` which will install `protoc-gen-gofast`, `protoc-gen-grpc`, and `protoc-gen-grpc-gateway` from vendor.
+5) Build protos by running `./protoc.sh` from inside the `proto` directory.
+6) go run/build should work as expected.
 
 
 ## Concepts

@@ -18,3 +18,10 @@ slogd
 data/
 
 .DS_Store
+
+# I'm fine with dep ensure pulling code
+vendor/
+
+# Don't track generated protobufs
+proto/*.pb.go
+proto/*.pb.gw.go
