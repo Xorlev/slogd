@@ -321,10 +321,10 @@ func (fl *FileLog) reapSegments() error {
 
 func (fl *FileLog) logMaintenance() {
 	// Periodic maintenance of logs, removing older segments beyond the retention horizon
+	ticker := time.NewTicker(LOG_MAINTENANCE_PERIOD)
 	for {
-		timer := time.NewTimer(LOG_MAINTENANCE_PERIOD)
 		select {
-		case <-timer.C:
+		case <-ticker.C:
 			fl.logger.Info("Periodic maintenance starting.")
 
 			// Check if old segments need to be removed
@@ -339,7 +339,7 @@ func (fl *FileLog) logMaintenance() {
 
 		case <-fl.closeCh:
 			fl.logger.Info("Stopping periodic maintenance.")
-			timer.Stop()
+			ticker.Stop()
 			break
 		}
 	}
