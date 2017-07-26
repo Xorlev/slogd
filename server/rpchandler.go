@@ -201,7 +201,7 @@ func (s *StructuredLogServer) pubsubListener() {
 	s.logger.Info("Starting pubsub listener..")
 	for {
 		for log := range s.fanin {
-			s.logger.Debugf("Published log: %+v", log)
+			s.logger.Debugf("Received log: %+v", log)
 
 			s.RLock()
 			val, ok := s.subscribers[log.Topic]
