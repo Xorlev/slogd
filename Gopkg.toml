@@ -28,6 +28,7 @@ required = [
 	"google.golang.org/genproto/googleapis/api/annotations",
 	"github.com/gogo/protobuf/types",
 	"github.com/gogo/protobuf/proto",
+	"github.com/golang/glog",
 	"github.com/grpc-ecosystem/grpc-gateway/runtime",
 	"github.com/grpc-ecosystem/grpc-gateway/utilities",
 ]
