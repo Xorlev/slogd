@@ -54,7 +54,7 @@ func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 			Timestamp:   t,
 		}
 
-		logs, _, err := topic.Retrieve(ctx, filter)
+		logRetrieval, err := topic.Retrieve(ctx, filter, nil)
 		if err != nil {
 			s.logger.Errorw("Failed to retrieve logs",
 				"req", req,
@@ -63,7 +63,7 @@ func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 			return nil, grpc.Errorf(codes.Internal, "Error retrieving logs: %v", err)
 		}
 
-		resp.Logs = logs
+		resp.Logs = logRetrieval.Logs
 
 		return resp, nil
 	} else {
@@ -127,11 +127,13 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 
 		ch := s.addSubscriber(req, clientID)
 
-		c := &cursor{
-			ctx:            stream.Context(),
-			lastOffset:     min(req.GetOffset(), topic.Length()),
-			unreadMessages: ch,
+		filter := &storage.LogFilter{
+			StartOffset: req.GetOffset(),
+			MaxMessages: uint32(req.GetMaxMessages()),
+			// Timestamp:   t,
 		}
+
+		c := newCursor(stream.Context(), filter, ch)
 
 		if err := c.consume(topic, stream.SendMsg); err != nil {
 			return err

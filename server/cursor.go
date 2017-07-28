@@ -7,7 +7,7 @@ import (
 
 type cursor struct {
 	ctx            context.Context
-	lastOffset     uint64
+	continuation   storage.Continuation
 	unreadMessages storage.LogEntryChannel
 }
 
@@ -15,17 +15,17 @@ func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
 	// Page through log until no more messages show up, then return control to caller
 	for {
 		filter := &storage.LogFilter{
-			StartOffset: c.lastOffset + 1,
+			StartOffset: c.continuation.LastOffsetRead + 1,
 			MaxMessages: 1000,
 		}
 
-		initial, _, err := topic.Retrieve(c.ctx, filter)
+		initial, err := topic.Retrieve(c.ctx, filter, &c.continuation)
 		if err != nil {
 			return err
 		}
 
-		lastOffset := c.lastOffset
-		for _, log := range initial {
+		lastOffset := c.continuation.LastOffsetRead
+		for _, log := range initial.Logs {
 			lastOffset = log.GetOffset()
 			if err := f(logToResponse(log)); err != nil {
 				return err
@@ -33,12 +33,23 @@ func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
 		}
 
 		// If we didn't get any new logs, we're done
-		if len(initial) == 0 || lastOffset == c.lastOffset {
+		if len(initial.Logs) == 0 || lastOffset == c.continuation.LastOffsetRead {
 			return nil
 		}
 
-		c.lastOffset = lastOffset
+		c.continuation = initial.Continuation
 	}
 
 	return nil
+}
+
+func newCursor(ctx context.Context, lf *storage.LogFilter, logChannel storage.LogEntryChannel) *cursor {
+	return &cursor{
+		ctx: ctx,
+		continuation: storage.Continuation{
+			FilePosition:   -1,
+			LastOffsetRead: lf.StartOffset,
+		},
+		unreadMessages: logChannel,
+	}
 }

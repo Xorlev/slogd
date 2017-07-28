@@ -27,8 +27,7 @@ type LogEntryChannel chan *internal.TopicAndLog
 type Log interface {
 	Name() string
 	LogChannel() LogEntryChannel
-	Retrieve(context.Context, *LogFilter) ([]*pb.LogEntry, *Continuation, error)
-	ContinueRetrieve(context.Context, *Continuation) ([]*pb.LogEntry, error)
+	Retrieve(context.Context, *LogFilter, *Continuation) (*LogRetrieval, error)
 	Append(context.Context, []*pb.LogEntry) ([]uint64, error)
 	Length() uint64
 	Close() error
@@ -50,10 +49,21 @@ type FileLog struct {
 	closeCh             chan bool
 }
 
+type Continuation struct {
+	LastOffsetRead uint64
+	FilePosition   int64
+}
+
 type LogFilter struct {
-	StartOffset uint64
-	MaxMessages uint32
-	Timestamp   time.Time
+	StartOffset  uint64
+	MaxMessages  uint32
+	Timestamp    time.Time
+	Continuation Continuation
+}
+
+type LogRetrieval struct {
+	Logs         []*pb.LogEntry
+	Continuation Continuation
 }
 
 func (lf *LogFilter) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
@@ -75,12 +85,6 @@ func (lf *LogFilter) SegmentPassesFilter(segment logSegment) (bool, error) {
 	return segment.EndOffset() > lf.StartOffset, nil
 }
 
-type Continuation struct {
-	LastOffsetRead uint64
-	FilePosition   uint64
-	LogFilter      *LogFilter
-}
-
 func (fl *FileLog) Name() string {
 	return fl.topic
 }
@@ -89,7 +93,7 @@ func (fl *FileLog) LogChannel() LogEntryChannel {
 	return fl.messagesWithOffsets
 }
 
-func (fl *FileLog) Retrieve(ctx context.Context, lf *LogFilter) ([]*pb.LogEntry, *Continuation, error) {
+func (fl *FileLog) Retrieve(ctx context.Context, lf *LogFilter, continuation *Continuation) (*LogRetrieval, error) {
 	logEntries := make([]*pb.LogEntry, 0)
 	scannedLogs := 0
 
@@ -101,9 +105,11 @@ func (fl *FileLog) Retrieve(ctx context.Context, lf *LogFilter) ([]*pb.LogEntry,
 	// TODO: race between logfile reaper and segment retrieval
 	// Find the covering set of segments with messages that fit our LogFilter, then ask for messages up to
 	// the number of messages requested. May span multiple segments.
+	var lastOffset uint64 = 0
+	var positionEnd int64 = -1
 	for _, segment := range segments {
 		if ctx.Err() != nil {
-			return nil, nil, ctx.Err()
+			return nil, ctx.Err()
 		}
 
 		messagesRead := uint32(len(logEntries))
@@ -112,61 +118,42 @@ func (fl *FileLog) Retrieve(ctx context.Context, lf *LogFilter) ([]*pb.LogEntry,
 		// Evaluate LogFilter against segment
 		segmentMatches, err := lf.SegmentPassesFilter(segment)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 		if segmentMatches && messagesRead < lf.MaxMessages {
-			segmentLogs, scanned, _, err := segment.Retrieve(ctx, lf, -1, lf.MaxMessages-messagesRead)
+			var filePosition int64 = -1
+			if continuation != nil {
+				filePosition = continuation.FilePosition
+			}
+
+			segmentLogs, scanned, segmentPositionEnd, err := segment.Retrieve(ctx, lf, filePosition, lf.MaxMessages-messagesRead)
 			if err != nil {
-				return nil, nil, errors.Wrap(err, "Error reading from segment")
+				return nil, errors.Wrap(err, "Error reading from segment")
 			}
 
 			logEntries = append(logEntries, segmentLogs...)
+
+			if len(segmentLogs) > 0 {
+				lastOffset = segmentLogs[len(segmentLogs)-1].Offset
+			}
+
 			scannedLogs += scanned
+			positionEnd = segmentPositionEnd
 		}
 	}
 
 	fl.logger.Infof("Scanned %d logs for %d returned messages",
 		scannedLogs, len(logEntries))
 
-	return logEntries, nil, nil
+	return &LogRetrieval{
+		Logs: logEntries,
+		Continuation: Continuation{
+			FilePosition:   positionEnd,
+			LastOffsetRead: lastOffset,
+		},
+	}, nil
 }
-
-// func (fl *FileLog) ContinueRetrieve(ctx context.Context, continuation *Continuation) ([]*pb.LogEntry, error) {
-// 	logEntries := make([]*pb.LogEntry, 0)
-// 	scannedLogs := 0
-
-// 	fl.RLock()
-// 	segments := make([]logSegment, len(fl.segments))
-// 	copy(segments, fl.segments)
-// 	fl.RUnlock()
-
-// 	nextOffset := continuation.LastOffsetRead + 1
-
-// 	continuation
-// 	for _, segment := range segments {
-// 		messagesRead := uint32(len(logEntries))
-
-// 		if segment.EndOffset() > nextOffset && messagesRead < req.MaxMessages {
-// 			segmentLogs, scanned, pos, err := segment.Retrieve(ctx, nextOffset, continuation.FilePosition, req.MaxMessages-messagesRead)
-// 			if err != nil {
-// 				return nil, err
-// 			}
-
-// 			logEntries = append(logEntries, segmentLogs...)
-// 			scannedLogs += scanned
-
-// 			if len(segmentLogs) > 0
-// 				lastLog := segmentLogs[len(segmentLogs) - 1]
-
-// 		}
-// 	}
-
-// 	fl.logger.Debugf("Scanned %d logs for %d returned messages",
-// 		scannedLogs, len(logEntries))
-
-// 	return logEntries, nil
-// }
 
 func (fl *FileLog) Append(ctx context.Context, logs []*pb.LogEntry) ([]uint64, error) {
 	fl.Lock()

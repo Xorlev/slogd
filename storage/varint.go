@@ -42,7 +42,7 @@ var (
 )
 
 type Reader interface {
-	ReadMsg(msg proto.Message) error
+	ReadMsg(msg proto.Message) (uint64, error)
 }
 
 type ReadCloser interface {
@@ -98,7 +98,7 @@ func NewDelimitedReader(r io.Reader, maxSize int) ReadCloser {
 	if c, ok := r.(io.Closer); ok {
 		closer = c
 	}
-	return &varintReader{bufio.NewReader(r), nil, maxSize, closer}
+	return &varintReader{bufio.NewReader(r), make([]byte, 10), maxSize, closer}
 }
 
 type varintReader struct {
@@ -108,23 +108,29 @@ type varintReader struct {
 	closer  io.Closer
 }
 
-func (this *varintReader) ReadMsg(msg proto.Message) error {
+func (this *varintReader) ReadMsg(msg proto.Message) (bytesRead uint64, err error) {
 	length64, err := binary.ReadUvarint(this.r)
 	if err != nil {
-		return err // Must return io.EOF
+		return 0, err // Must return io.EOF
 	}
+
+	// XXX hack :(
+	bytesRead += uint64(binary.PutUvarint(this.buf, length64))
+
 	length := int(length64)
 	if length < 0 || length > this.maxSize {
-		return io.ErrShortBuffer
+		return bytesRead, io.ErrShortBuffer
 	}
 	if len(this.buf) < length {
 		this.buf = make([]byte, length)
 	}
 	buf := this.buf[:length]
-	if _, err := io.ReadFull(this.r, buf); err != nil {
-		return err // Must return io.EOF
+	n, err := io.ReadFull(this.r, buf)
+	bytesRead += uint64(n)
+	if err != nil {
+		return bytesRead, err // Must return io.EOF
 	}
-	return proto.Unmarshal(buf, msg)
+	return bytesRead, proto.Unmarshal(buf, msg)
 }
 
 func (this *varintReader) Close() error {

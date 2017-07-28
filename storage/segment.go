@@ -72,7 +72,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, fil
 
 	// Determine where to start in the file
 	var positionStart uint64 = 0
-	if filePosition < 0 {
+	if filePosition < 0 && logFilter.StartOffset != s.StartOffset() {
 		if logFilter.StartOffset > 0 {
 			// Seek to first position
 			var err error
@@ -84,6 +84,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, fil
 			s.logger.Warn("Timestamp indices have not yet been implemented, falling back to full log scans.")
 		}
 	} else {
+		s.logger.Debug("Skipping index lookup.")
 		// We were provided an explicit position (continuations for cursors), seek there
 		positionStart = uint64(filePosition)
 	}
@@ -94,6 +95,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, fil
 	// Read and collect messages from log
 	reader := NewDelimitedReader(bufio.NewReader(file), MESSAGE_SIZE_LIMIT)
 	logEntries := make([]*pb.LogEntry, 0)
+	var bytesRead uint64 = 0
 	scannedLogs := 0
 	for {
 		// Abort early if we can
@@ -102,9 +104,10 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, fil
 		}
 
 		msg := &pb.LogEntry{}
-		err := reader.ReadMsg(msg)
+		n, err := reader.ReadMsg(msg)
 
 		if err == nil {
+			bytesRead += n
 			scannedLogs += 1
 			// s.logger.Debugf("Scanning entry: %+v", msg)
 
@@ -141,9 +144,9 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, fil
 		return nil, scannedLogs, -1, errors.Wrap(err, "Failed to determine file position after scan")
 	}
 
-	s.logger.Infof("Took %+v to scan segment (%d logs scanned, %d bytes).", time.Since(startedAt), scannedLogs, positionEnd-int64(positionStart))
+	s.logger.Infof("Took %+v to scan segment (%d logs scanned, %d bytes read, %d bytes used).", time.Since(startedAt), scannedLogs, positionEnd-int64(positionStart), bytesRead)
 
-	return logEntries, scannedLogs, positionEnd, nil
+	return logEntries, scannedLogs, int64(positionStart + bytesRead), nil
 }
 
 func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
@@ -317,7 +320,7 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 	var startTime *time.Time = nil
 	var endTime *time.Time = nil
 	for {
-		err := reader.ReadMsg(logEntry)
+		_, err := reader.ReadMsg(logEntry)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -406,7 +409,7 @@ func (s *fileLogSegment) rebuildIndex() error {
 	logEntry := &pb.LogEntry{}
 	reader := NewDelimitedReader(bufio.NewReader(s.file), MESSAGE_SIZE_LIMIT)
 	for {
-		err := reader.ReadMsg(logEntry)
+		_, err := reader.ReadMsg(logEntry)
 		if err != nil {
 			if err == io.EOF {
 				break
