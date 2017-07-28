@@ -9,6 +9,12 @@
 
 [[projects]]
   branch = "master"
+  name = "github.com/golang/glog"
+  packages = ["."]
+  revision = "23def4e6c14b4da8ac2ed8007337bc5eb5007998"
+
+[[projects]]
+  branch = "master"
   name = "github.com/golang/protobuf"
   packages = ["jsonpb","proto","protoc-gen-go/descriptor","ptypes/any","ptypes/struct"]
   revision = "0a4f71a498b7c4812f64969510bcb4eca251e33a"
@@ -16,7 +22,7 @@
 [[projects]]
   branch = "master"
   name = "github.com/grpc-ecosystem/go-grpc-middleware"
-  packages = ["."]
+  packages = [".","logging","logging/zap","tags"]
   revision = "f63a7dfb64c138bd93d5c5b896d8b33c4b08e000"
 
 [[projects]]
@@ -100,6 +106,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "7281f3076babd9b8f2e20a7de5e29e559ce0dacdf1595c424a502a68fdbc7117"
+  inputs-digest = "e1e3f5f3f6dc0fed104cced9aed29bbbc73f8a4d1912ee15145ad2ad741a95f2"
   solver-name = "gps-cdcl"
   solver-version = 1
