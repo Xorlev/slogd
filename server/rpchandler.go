@@ -48,7 +48,7 @@ func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 			}
 		}
 
-		filter := &storage.LogFilter{
+		filter := &storage.LogQuery{
 			StartOffset: req.GetOffset(),
 			MaxMessages: uint32(req.GetMaxMessages()),
 			Timestamp:   t,
@@ -127,7 +127,7 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 
 		ch := s.addSubscriber(req, clientID)
 
-		filter := &storage.LogFilter{
+		filter := &storage.LogQuery{
 			StartOffset: req.GetOffset(),
 			MaxMessages: uint32(req.GetMaxMessages()),
 			// Timestamp:   t,

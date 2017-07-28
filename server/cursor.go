@@ -14,7 +14,7 @@ type cursor struct {
 func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
 	// Page through log until no more messages show up, then return control to caller
 	for {
-		filter := &storage.LogFilter{
+		filter := &storage.LogQuery{
 			StartOffset: c.continuation.LastOffsetRead + 1,
 			MaxMessages: 1000,
 		}
@@ -43,7 +43,7 @@ func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
 	return nil
 }
 
-func newCursor(ctx context.Context, lf *storage.LogFilter, logChannel storage.LogEntryChannel) *cursor {
+func newCursor(ctx context.Context, lf *storage.LogQuery, logChannel storage.LogEntryChannel) *cursor {
 	return &cursor{
 		ctx: ctx,
 		continuation: storage.Continuation{

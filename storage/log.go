@@ -27,7 +27,7 @@ type LogEntryChannel chan *internal.TopicAndLog
 type Log interface {
 	Name() string
 	LogChannel() LogEntryChannel
-	Retrieve(context.Context, *LogFilter, *Continuation) (*LogRetrieval, error)
+	Retrieve(context.Context, *LogQuery, *Continuation) (*LogRetrieval, error)
 	Append(context.Context, []*pb.LogEntry) ([]uint64, error)
 	Length() uint64
 	Close() error
@@ -54,7 +54,7 @@ type Continuation struct {
 	FilePosition   int64
 }
 
-type LogFilter struct {
+type LogQuery struct {
 	StartOffset  uint64
 	MaxMessages  uint32
 	Timestamp    time.Time
@@ -66,7 +66,7 @@ type LogRetrieval struct {
 	Continuation Continuation
 }
 
-func (lf *LogFilter) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
+func (lf *LogQuery) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
 	if !lf.Timestamp.IsZero() {
 		ts, err := types.TimestampFromProto(entry.GetTimestamp())
 		if err != nil {
@@ -81,7 +81,7 @@ func (lf *LogFilter) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
 	return true, nil
 }
 
-func (lf *LogFilter) SegmentPassesFilter(segment logSegment) (bool, error) {
+func (lf *LogQuery) SegmentPassesFilter(segment logSegment) (bool, error) {
 	return segment.EndOffset() > lf.StartOffset, nil
 }
 
@@ -93,7 +93,7 @@ func (fl *FileLog) LogChannel() LogEntryChannel {
 	return fl.messagesWithOffsets
 }
 
-func (fl *FileLog) Retrieve(ctx context.Context, lf *LogFilter, continuation *Continuation) (*LogRetrieval, error) {
+func (fl *FileLog) Retrieve(ctx context.Context, lf *LogQuery, continuation *Continuation) (*LogRetrieval, error) {
 	logEntries := make([]*pb.LogEntry, 0)
 	scannedLogs := 0
 

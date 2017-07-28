@@ -20,7 +20,7 @@ const (
 )
 
 type logSegment interface {
-	Retrieve(context.Context, *LogFilter, int64, uint32) ([]*pb.LogEntry, int, int64, error)
+	Retrieve(context.Context, *LogQuery, int64, uint32) ([]*pb.LogEntry, int, int64, error)
 	Append(context.Context, *pb.LogEntry) error
 	StartOffset() uint64
 	EndOffset() uint64
@@ -53,7 +53,7 @@ type fileLogSegment struct {
 	endTime     *time.Time
 }
 
-func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogFilter, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
+func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
 	s.RLock()
 	defer s.RUnlock()
 
