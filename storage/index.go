@@ -45,7 +45,7 @@ type fileIndex struct {
 
 func (fi *fileIndex) Find(targetOffset uint64) (uint64, error) {
 	buffer := make([]byte, INDEX_SIZE)
-	file, err := os.OpenFile(fi.filename, os.O_CREATE|os.O_RDWR|os.O_SYNC, 0666)
+	file, err := os.OpenFile(fi.filename, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return 0, err
 	}
@@ -214,7 +214,7 @@ func (fi *fileIndex) Close() error {
 func OpenOffsetIndex(logger *zap.SugaredLogger, basePath string, startOffset uint64) (*fileIndex, error) {
 	filename := fmt.Sprintf("/%d.oindex", startOffset)
 	filename = path.Join(basePath, filename)
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_SYNC, 0666)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return nil, err
 	}

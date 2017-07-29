@@ -297,11 +297,11 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 	// TODO move to segment
 	filename := fmt.Sprintf("/%d.log", startOffset)
 	filename = path.Join(basePath, filename)
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_SYNC, 0666)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return nil, err
 	}
-	parentDir, err := os.OpenFile(basePath, os.O_SYNC, 0666)
+	parentDir, err := os.OpenFile(basePath, 0, 0666)
 	if err != nil {
 		return nil, err
 	}
