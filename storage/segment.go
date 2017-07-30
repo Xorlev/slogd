@@ -36,14 +36,18 @@ type fileLogSegment struct {
 	logSegment
 	sync.RWMutex
 
-	logger              *zap.SugaredLogger
-	basePath            string
-	closed              bool
-	file                *os.File
-	filename            string
-	filePosition        int64 // TODO: ensure reads never go beyond filePosition
-	fileWriter          *bufio.Writer
-	offsetIndex         Index
+	logger       *zap.SugaredLogger
+	basePath     string
+	closed       bool
+	file         *os.File
+	filename     string
+	filePosition int64 // TODO: ensure reads never go beyond filePosition
+	fileWriter   *bufio.Writer
+	// offsetIndex  Index
+
+	offsetIndex    *kvStore
+	timestampIndex *kvStore
+
 	segmentWriter       WriteCloser
 	positionOfLastIndex int64
 
@@ -83,8 +87,8 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 		} else if !logFilter.Timestamp.IsZero() {
 			s.logger.Warn("Timestamp indices have not yet been implemented, falling back to full log scans.")
 		}
-	} else {
-		s.logger.Debug("Skipping index lookup.")
+	} else if logFilter.StartOffset != s.startOffset {
+		s.logger.Debugf("Skipping index lookup, %v", logFilter)
 		// We were provided an explicit position (continuations for cursors), seek there
 		positionStart = uint64(filePosition)
 	}
@@ -158,7 +162,7 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 	}
 
 	// Assign timestamp
-	newTime := time.Now()
+	newTime := ctx.Value("requestStart").(time.Time)
 	if s.endTime != nil && newTime.Before(*s.endTime) {
 		return errors.New("Time moving backwards!")
 	}
@@ -176,15 +180,11 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 		s.endOffset = log.GetOffset()
 	}
 
-	logTimestamp, err := types.TimestampFromProto(log.GetTimestamp())
-	if err != nil {
-		return err
+	if s.startTime.IsZero() || newTime.Before(*s.startTime) {
+		s.startTime = &newTime
 	}
-	if s.startTime.IsZero() || logTimestamp.Before(*s.startTime) {
-		s.startTime = &logTimestamp
-	}
-	if s.endTime.IsZero() || logTimestamp.After(*s.endTime) {
-		s.endTime = &logTimestamp
+	if s.endTime.IsZero() || newTime.After(*s.endTime) {
+		s.endTime = &newTime
 	}
 
 	before := s.filePosition
@@ -200,7 +200,11 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 
 	// Index if this is the first item or if it's been BYTES_BETWEEN_INDEX since the last index
 	if s.positionOfLastIndex == 0 || s.filePosition-s.positionOfLastIndex >= BYTES_BETWEEN_INDEX {
-		s.offsetIndex.IndexOffset(log.GetOffset(), s.filePosition-int64(bytesWritten))
+		filepos := s.filePosition - int64(bytesWritten)
+
+		s.offsetIndex.IndexKey(log.GetOffset(), filepos)
+		s.timestampIndex.IndexKey(uint64(newTime.UnixNano()), int64(log.GetOffset()))
+
 		s.positionOfLastIndex = s.filePosition
 	}
 
@@ -261,10 +265,21 @@ func (s *fileLogSegment) Delete() error {
 		return err
 	}
 
+	if err := s.timestampIndex.Delete(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func (s *fileLogSegment) Flush() error {
+	s.Lock()
+	defer s.Unlock()
+
+	return s.flush()
+}
+
+func (s *fileLogSegment) flush() error {
 	s.fileWriter.Flush()
 
 	// TODO: also sync dir?
@@ -279,12 +294,16 @@ func (s *fileLogSegment) Close() error {
 	s.Lock()
 	defer s.Unlock()
 
-	s.Flush()
+	s.flush()
 	if err := s.file.Close(); err != nil {
 		return err
 	}
 
 	if err := s.offsetIndex.Close(); err != nil {
+		return err
+	}
+
+	if err := s.timestampIndex.Close(); err != nil {
 		return err
 	}
 
@@ -380,36 +399,76 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 		endTime:     endTime,
 	}
 
-	offsetIndex, err := OpenOffsetIndex(logger, basePath, startOffset)
+	offsetIndex, err := fls.openOrRebuildIndex("oindex", func(log *pb.LogEntry) uint64 {
+		return log.GetOffset()
+	}, func(pos int64, log *pb.LogEntry) int64 { return pos })
+
+	if err != nil {
+		return nil, err
+	}
+
+	tsIndex, err := fls.openOrRebuildIndex("tindex", func(log *pb.LogEntry) uint64 {
+		logTimestamp, _ := types.TimestampFromProto(log.GetTimestamp())
+
+		logger.Infof("Time: %v", logTimestamp)
+
+		return uint64(logTimestamp.UnixNano())
+	}, func(pos int64, log *pb.LogEntry) int64 { return int64(log.GetOffset()) })
+
 	if err != nil {
 		return nil, err
 	}
 
 	fls.offsetIndex = offsetIndex
+	fls.timestampIndex = tsIndex
 
-	if offsetIndex.SizeBytes() == 0 && startOffset != nextOffset {
-		// Index is missing
-		logger.Infow("Index missing for segment, rebuilding",
-			"filename", filename,
-		)
+	// fls.offsetIndex2 =
 
-		if err := fls.rebuildIndex(); err != nil {
-			return nil, err
-		}
-	}
+	// if offsetIndex.SizeBytes() == 0 && startOffset != nextOffset {
+	// 	// Index is missing
+	// 	logger.Infow("Index missing for segment, rebuilding",
+	// 		"filename", filename,
+	// 	)
+
+	// 	if err := fls.rebuildIndex(); err != nil {
+	// 		return nil, err
+	// 	}
+	// }
 
 	return fls, nil
 }
 
-func (s *fileLogSegment) rebuildIndex() error {
+func (s *fileLogSegment) openOrRebuildIndex(indexType string, keyFn func(*pb.LogEntry) uint64, valueFn func(int64, *pb.LogEntry) int64) (*kvStore, error) {
+	index, err := OpenOrCreateStore(s.logger, s.basePath, indexType, s.startOffset)
+	if err != nil {
+		return nil, err
+	}
+
+	if index.SizeBytes() == 0 && s.startOffset != s.endOffset {
+		// Index is missing
+		s.logger.Infow("Index missing for segment, rebuilding",
+			"filename", s.filename,
+		)
+
+		if err := s.rebuildIndex(index, keyFn, valueFn); err != nil {
+			return nil, err
+		}
+	}
+
+	return index, nil
+}
+
+func (s *fileLogSegment) rebuildIndex(store *kvStore, keyFn func(*pb.LogEntry) uint64, valueFn func(int64, *pb.LogEntry) int64) error {
 	// Rewind segment to start of file
 	s.file.Seek(0, io.SeekStart)
 
 	var lastIndexPosition int64 = 0
-	logEntry := &pb.LogEntry{}
+
 	reader := NewDelimitedReader(bufio.NewReader(s.file), MESSAGE_SIZE_LIMIT)
+	logEntry := &pb.LogEntry{}
+	position := int64(0)
 	for {
-		_, err := reader.ReadMsg(logEntry)
+		n, err := reader.ReadMsg(logEntry)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -418,20 +477,17 @@ func (s *fileLogSegment) rebuildIndex() error {
 			}
 		}
 
-		position, err := s.file.Seek(0, io.SeekCurrent)
-		if err != nil {
-			return err
-		}
-
 		if lastIndexPosition == 0 || position-lastIndexPosition >= BYTES_BETWEEN_INDEX {
-			if err := s.offsetIndex.IndexOffset(logEntry.GetOffset(), position); err != nil {
+			if err := store.IndexKey(keyFn(logEntry), valueFn(position, logEntry)); err != nil {
 				return err
 			}
 			lastIndexPosition = position
 		}
+
+		position += int64(n)
 	}
 
-	s.logger.Info("Successfully rebuild index.")
+	s.logger.Info("Successfully rebuilt index.")
 
 	return nil
 }

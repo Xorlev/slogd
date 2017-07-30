@@ -82,7 +82,10 @@ func (lf *LogQuery) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
 }
 
 func (lf *LogQuery) SegmentPassesFilter(segment logSegment) (bool, error) {
-	return segment.EndOffset() > lf.StartOffset, nil
+	offsetMatches := segment.EndOffset() >= lf.StartOffset
+	timestampMatches := !segment.StartTime().IsZero() && !segment.EndTime().IsZero() && segment.EndTime().After(lf.Timestamp)
+
+	return offsetMatches || timestampMatches, nil
 }
 
 func (fl *FileLog) Name() string {
