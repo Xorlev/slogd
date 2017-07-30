@@ -267,7 +267,7 @@ func (s *fileLogSegment) Delete() error {
 	s.Lock()
 	defer s.Unlock()
 
-	s.Flush()
+	s.flush()
 	if err := s.file.Close(); err != nil {
 		return err
 	}
@@ -297,7 +297,6 @@ func (s *fileLogSegment) Flush() error {
 func (s *fileLogSegment) flush() error {
 	s.fileWriter.Flush()
 
-	// TODO: also sync dir?
 	if err := s.file.Sync(); err != nil {
 		return err
 	}
@@ -425,8 +424,6 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 	tsIndex, err := fls.openOrRebuildIndex("tindex", func(log *pb.LogEntry) uint64 {
 		logTimestamp, _ := types.TimestampFromProto(log.GetTimestamp())
 
-		logger.Infof("Time: %v", logTimestamp)
-
 		return uint64(logTimestamp.UnixNano())
 	}, func(pos int64, log *pb.LogEntry) int64 { return int64(log.GetOffset()) })
 
@@ -436,19 +433,6 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 
 	fls.offsetIndex = offsetIndex
 	fls.timestampIndex = tsIndex
-
-	// fls.offsetIndex2 =
-
-	// if offsetIndex.SizeBytes() == 0 && startOffset != nextOffset {
-	// 	// Index is missing
-	// 	logger.Infow("Index missing for segment, rebuilding",
-	// 		"filename", filename,
-	// 	)
-
-	// 	if err := fls.rebuildIndex(); err != nil {
-	// 		return nil, err
-	// 	}
-	// }
 
 	return fls, nil
 }
