@@ -3,16 +3,19 @@ package cmd
 import (
 	"fmt"
 	"github.com/gogo/protobuf/proto"
+	"github.com/gogo/protobuf/types"
 	"github.com/spf13/cobra"
 	pb "github.com/xorlev/slogd/proto"
 	context "golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"io"
 	"os"
+	"time"
 )
 
 var (
-	startOffset uint64
+	startOffset    uint64
+	startTimestamp string
 )
 
 // produceCmd represents the produce command
@@ -38,8 +41,33 @@ var consumeCmd = &cobra.Command{
 		defer conn.Close()
 		client := pb.NewStructuredLogClient(conn)
 
-		req := &pb.GetLogsRequest{
-			Topic: topic,
+		var req *pb.GetLogsRequest = nil
+		if len(startTimestamp) == 0 {
+			req = &pb.GetLogsRequest{
+				Topic: topic,
+				StartAt: &pb.GetLogsRequest_Offset{
+					Offset: startOffset,
+				},
+			}
+		} else {
+			ts, err := time.Parse(time.RFC3339Nano, startTimestamp)
+			if err != nil {
+				fmt.Printf("Error parsing timestamp: %v", err)
+				os.Exit(1)
+			}
+
+			timeProto, err := types.TimestampProto(ts)
+			if err != nil {
+				fmt.Printf("Error parsing timestamp: %v", err)
+				os.Exit(1)
+			}
+
+			req = &pb.GetLogsRequest{
+				Topic: topic,
+				StartAt: &pb.GetLogsRequest_Timestamp{
+					Timestamp: timeProto,
+				},
+			}
 		}
 
 		slc, err := client.StreamLogs(ctx, req)
@@ -72,4 +100,5 @@ func init() {
 	consumeCmd.Flags().StringVar(&rpcAddr, "server_addr", "localhost:8080", "slogd server")
 	consumeCmd.Flags().StringVar(&topic, "topic", "", "slogd topic to produce to")
 	consumeCmd.Flags().Uint64Var(&startOffset, "start_offset", 0, "offset to start streaming from")
+	consumeCmd.Flags().StringVar(&startTimestamp, "start_timestamp", "", "timestamp to start consuming from")
 }
