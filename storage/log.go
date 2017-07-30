@@ -61,9 +61,24 @@ type LogQuery struct {
 	Continuation Continuation
 }
 
-type LogRetrieval struct {
-	Logs         []*pb.LogEntry
-	Continuation Continuation
+func NewLogQuery(req *pb.GetLogsRequest) (*LogQuery, error) {
+	var t time.Time = time.Time{}
+
+	if req.GetTimestamp() != nil {
+		var err error = nil
+		t, err = types.TimestampFromProto(req.GetTimestamp())
+		if err != nil {
+			return nil, errors.Errorf("Bad timestamp: %v", req.GetTimestamp())
+		}
+	}
+
+	filter := &LogQuery{
+		StartOffset: req.GetOffset(),
+		MaxMessages: uint32(req.GetMaxMessages()),
+		Timestamp:   t,
+	}
+
+	return filter, nil
 }
 
 func (lf *LogQuery) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
@@ -79,6 +94,11 @@ func (lf *LogQuery) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
 	}
 
 	return true, nil
+}
+
+type LogRetrieval struct {
+	Logs         []*pb.LogEntry
+	Continuation Continuation
 }
 
 func (lf *LogQuery) SegmentPassesFilter(segment logSegment) (bool, error) {

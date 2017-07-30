@@ -1,7 +1,6 @@
 package server
 
 import (
-	"github.com/gogo/protobuf/types"
 	pb "github.com/xorlev/slogd/proto"
 	storage "github.com/xorlev/slogd/storage"
 	"go.uber.org/zap"
@@ -10,7 +9,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 type StructuredLogServer struct {
@@ -38,21 +36,12 @@ func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 	s.RUnlock()
 
 	if ok {
-		var t time.Time = time.Time{}
-
-		if req.GetTimestamp() != nil {
-			var err error = nil
-			t, err = types.TimestampFromProto(req.GetTimestamp())
-			if err != nil {
-				return nil, grpc.Errorf(codes.InvalidArgument, "Bad timestamp: %+v", err)
-			}
+		filter, err := storage.NewLogQuery(req)
+		if err != nil {
+			return nil, grpc.Errorf(codes.InvalidArgument, "Failed to create query: %+v", err)
 		}
 
-		filter := &storage.LogQuery{
-			StartOffset: req.GetOffset(),
-			MaxMessages: uint32(req.GetMaxMessages()),
-			Timestamp:   t,
-		}
+		s.logger.Debugf("Filter = %+v", filter)
 
 		logRetrieval, err := topic.Retrieve(ctx, filter, nil)
 		if err != nil {
@@ -127,11 +116,12 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 
 		ch := s.addSubscriber(req, clientID)
 
-		filter := &storage.LogQuery{
-			StartOffset: req.GetOffset(),
-			MaxMessages: uint32(req.GetMaxMessages()),
-			// Timestamp:   t,
+		filter, err := storage.NewLogQuery(req)
+		if err != nil {
+			return grpc.Errorf(codes.InvalidArgument, "Failed to create query: %+v", err)
 		}
+
+		s.logger.Debugf("Filter = %+v", filter)
 
 		c := newCursor(stream.Context(), filter, ch)
 

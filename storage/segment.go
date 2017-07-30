@@ -62,7 +62,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 	defer s.RUnlock()
 
 	if s.closed {
-		return nil, 0, -1, errors.New("Segment is closed.")
+		return retrieveError(errors.New("Segment is closed."))
 	}
 
 	startedAt := time.Now()
@@ -71,21 +71,32 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 	// TODO(xorlev): can these be safely pooled?
 	file, err := os.OpenFile(s.filename, os.O_RDONLY, 0666)
 	if err != nil {
-		return nil, 0, -1, errors.Wrap(err, "Failed to open segment file.")
+		return retrieveError(errors.Wrap(err, "Failed to open segment file."))
 	}
 
 	// Determine where to start in the file
 	var positionStart uint64 = 0
-	if filePosition < 0 && logFilter.StartOffset != s.StartOffset() {
-		if logFilter.StartOffset > 0 {
+
+	// TODO: if logfilter.startoffset = s.startoffset, filepos = 0
+	// logFilter.StartOffset != s.StartOffset()
+	if filePosition < 0 {
+		if !logFilter.Timestamp.IsZero() {
+			offset, err := s.timestampIndex.Find(uint64(logFilter.Timestamp.UnixNano()))
+			if err != nil {
+				return retrieveError(errors.Wrap(err, "Failed to search index for start timestamp"))
+			}
+
+			positionStart, err = s.offsetIndex.Find(offset)
+			if err != nil {
+				return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
+			}
+		} else if logFilter.StartOffset > 0 {
 			// Seek to first position
 			var err error
 			positionStart, err = s.offsetIndex.Find(logFilter.StartOffset)
 			if err != nil {
-				return nil, 0, -1, errors.Wrap(err, "Failed to search index for start offset.")
+				return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
 			}
-		} else if !logFilter.Timestamp.IsZero() {
-			s.logger.Warn("Timestamp indices have not yet been implemented, falling back to full log scans.")
 		}
 	} else if logFilter.StartOffset != s.startOffset {
 		s.logger.Debugf("Skipping index lookup, %v", logFilter)
@@ -104,7 +115,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 	for {
 		// Abort early if we can
 		if ctx.Err() != nil {
-			return nil, scannedLogs, -1, ctx.Err()
+			return retrieveError(ctx.Err())
 		}
 
 		msg := &pb.LogEntry{}
@@ -121,7 +132,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 
 				// Failed to run filter, propagate
 				if err != nil {
-					return nil, 0, -1, errors.Wrap(err, "Failed to run LogFilter over log entry")
+					return retrieveError(errors.Wrap(err, "Failed to run LogFilter over log entry"))
 				}
 
 				if passes {
@@ -138,19 +149,23 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 				s.logger.Debugf("End of segment, EOF")
 				break
 			} else {
-				return nil, scannedLogs, -1, errors.Wrap(err, "Error while scanning segment")
+				return retrieveError(errors.Wrap(err, "Error while scanning segment"))
 			}
 		}
 	}
 
 	positionEnd, err := file.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return nil, scannedLogs, -1, errors.Wrap(err, "Failed to determine file position after scan")
+		return retrieveError(errors.Wrap(err, "Failed to determine file position after scan"))
 	}
 
 	s.logger.Infof("Took %+v to scan segment (%d logs scanned, %d bytes read, %d bytes used).", time.Since(startedAt), scannedLogs, positionEnd-int64(positionStart), bytesRead)
 
 	return logEntries, scannedLogs, int64(positionStart + bytesRead), nil
+}
+
+func retrieveError(err error) ([]*pb.LogEntry, int, int64, error) {
+	return nil, 0, -1, err
 }
 
 func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {

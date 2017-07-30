@@ -8,18 +8,25 @@ import (
 type cursor struct {
 	ctx            context.Context
 	continuation   storage.Continuation
+	logQuery       storage.LogQuery
 	unreadMessages storage.LogEntryChannel
 }
 
 func (c *cursor) consume(topic storage.Log, f func(interface{}) error) error {
 	// Page through log until no more messages show up, then return control to caller
 	for {
-		filter := &storage.LogQuery{
-			StartOffset: c.continuation.LastOffsetRead + 1,
-			MaxMessages: 1000,
+		var logQuery *storage.LogQuery = nil
+		if c.continuation.FilePosition < 0 {
+			logQuery = &c.logQuery
+			logQuery.MaxMessages = 1000
+		} else {
+			logQuery = &storage.LogQuery{
+				StartOffset: c.continuation.LastOffsetRead + 1,
+				MaxMessages: 1000,
+			}
 		}
 
-		initial, err := topic.Retrieve(c.ctx, filter, &c.continuation)
+		initial, err := topic.Retrieve(c.ctx, logQuery, &c.continuation)
 		if err != nil {
 			return err
 		}
@@ -47,9 +54,9 @@ func newCursor(ctx context.Context, lf *storage.LogQuery, logChannel storage.Log
 	return &cursor{
 		ctx: ctx,
 		continuation: storage.Continuation{
-			FilePosition:   -1,
-			LastOffsetRead: lf.StartOffset,
+			FilePosition: -1,
 		},
+		logQuery:       *lf,
 		unreadMessages: logChannel,
 	}
 }
