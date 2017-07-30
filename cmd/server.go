@@ -4,18 +4,7 @@ import (
 	"flag"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
-	"net"
-	"net/http"
-	"os"
-	"os/signal"
 
-	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
-	grpc_zap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
-	"golang.org/x/net/context"
-	"google.golang.org/grpc"
-
-	pb "github.com/xorlev/slogd/proto"
 	"github.com/xorlev/slogd/server"
 )
 
@@ -44,7 +33,7 @@ to quickly create a Cobra application.`,
 
 		flag.Parse()
 
-		if err := run(logger.Sugar()); err != nil {
+		if err := server.Run(logger.Sugar(), rpcAddr, httpAddr, dataDir); err != nil {
 			logger.Fatal("Failed to start slogd", zap.Error(err))
 		}
 	},
@@ -71,67 +60,4 @@ func init() {
 	serverCmd.Flags().StringVarP(&rpcAddr, "rpc_addr", "", "localhost:9090", "slogd gRPC listener")
 	serverCmd.Flags().StringVarP(&dataDir, "data_dir", "", "./data", "data directory")
 	serverCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose debug logging")
-}
-
-func run(logger *zap.SugaredLogger) error {
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
-
-	lis, err := net.Listen("tcp", rpcAddr)
-	if err != nil {
-		return err
-	}
-
-	logger.Infof("Starting RPC listener on %s", rpcAddr)
-
-	grpcServer := grpc.NewServer(
-		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
-			grpc_zap.StreamServerInterceptor(logger.Desugar()),
-		)),
-		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
-			grpc_zap.UnaryServerInterceptor(logger.Desugar()),
-		)))
-
-	config := &server.Config{
-		DataDir: dataDir,
-	}
-
-	sls, err := server.NewRpcHandler(logger, config)
-	if err != nil {
-		return err
-	}
-
-	pb.RegisterStructuredLogServer(grpcServer, sls)
-
-	go grpcServer.Serve(lis)
-
-	mux := runtime.NewServeMux()
-	opts := []grpc.DialOption{grpc.WithInsecure()}
-	err = pb.RegisterStructuredLogHandlerFromEndpoint(ctx, mux, rpcAddr, opts)
-	if err != nil {
-		return err
-	}
-	srv := &http.Server{Addr: httpAddr, Handler: mux}
-
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	go func() {
-		for sig := range c {
-			if sig == os.Interrupt {
-				srv.Shutdown(ctx)
-				grpcServer.GracefulStop()
-				sls.Close()
-				logger.Info("Shutting down.")
-				cancel()
-				os.Exit(0)
-			}
-		}
-	}()
-
-	logger.Infof("Starting HTTP listener on %s", httpAddr)
-	go srv.ListenAndServe()
-
-	<-ctx.Done()
-
-	return nil
 }
