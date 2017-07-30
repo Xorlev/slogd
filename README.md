@@ -139,12 +139,10 @@ and consume until reaching the end of the log.
 
 ## TODO
 
-- [ ] Cursors should be able to page reads without invoking index lookup
 - [ ] Consumer CLI tool
 - [ ] Configuration file
-- [ ] Topic configuration
+- [ ] Per-topic configuration
 - [ ] Implement latest/earliest lookup
-- [ ] Implement timestamp-based indexes and lookup
 - [ ] re2-based annotation filters
 
 ## License
