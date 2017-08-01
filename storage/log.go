@@ -18,11 +18,6 @@ import (
 	"golang.org/x/net/context"
 )
 
-const (
-	// TODO: enforce at segment level
-	MESSAGE_SIZE_LIMIT = 16 * 1024 * 1024
-)
-
 type LogEntryChannel chan *internal.TopicAndLog
 
 type Log interface {

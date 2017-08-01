@@ -98,7 +98,6 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 			}
 		} else if logFilter.StartOffset > 0 {
 			// Seek to first position
-			var err error
 			positionStart, err = s.offsetIndex.Find(logFilter.StartOffset)
 			if err != nil {
 				return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
@@ -114,7 +113,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 	file.Seek(int64(positionStart), io.SeekStart)
 
 	// Read and collect messages from log
-	reader := NewDelimitedReader(bufio.NewReader(file), MESSAGE_SIZE_LIMIT)
+	reader := NewDelimitedReader(bufio.NewReader(file), int(s.config.MessageSizeLimit))
 	logEntries := make([]*pb.LogEntry, 0)
 	var bytesRead uint64 = 0
 	scannedLogs := 0
