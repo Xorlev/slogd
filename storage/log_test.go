@@ -71,7 +71,7 @@ func TestLog_End2End(t *testing.T) {
 			MaxMessages: 1,
 		}
 
-		retrieval, err := log.Retrieve(context.Background(), q, nil)
+		retrieval, err := log.Retrieve(context.Background(), q)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestLog_End2End(t *testing.T) {
 			MaxMessages: 1000,
 		}
 
-		retrieval, err := log.Retrieve(context.Background(), q, nil)
+		retrieval, err := log.Retrieve(context.Background(), q)
 		if err != nil {
 			t.Fatal(err)
 		}

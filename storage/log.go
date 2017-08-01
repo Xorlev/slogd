@@ -23,7 +23,8 @@ type LogEntryChannel chan *internal.TopicAndLog
 type Log interface {
 	Name() string
 	LogChannel() LogEntryChannel
-	Retrieve(context.Context, *LogQuery, *Continuation) (*LogRetrieval, error)
+	Retrieve(context.Context, *LogQuery) (*LogRetrieval, error)
+	retrieve(context.Context, *LogQuery, *cursorPosition) (*LogRetrieval, error)
 	Append(context.Context, []*pb.LogEntry) ([]uint64, error)
 	Length() uint64
 	Close() error
@@ -45,7 +46,7 @@ type FileLog struct {
 	closeCh             chan bool
 }
 
-type Continuation struct {
+type cursorPosition struct {
 	LastOffsetRead uint64
 	FilePosition   int64
 }
@@ -58,11 +59,11 @@ const (
 )
 
 type LogQuery struct {
-	MaxMessages  uint32
-	Position     position
-	StartOffset  uint64
-	Timestamp    time.Time
-	Continuation Continuation
+	MaxMessages    uint32
+	Position       position
+	StartOffset    uint64
+	Timestamp      time.Time
+	cursorPosition cursorPosition
 }
 
 func NewLogQuery(req *pb.GetLogsRequest) (*LogQuery, error) {
@@ -109,8 +110,8 @@ func (query *LogQuery) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
 }
 
 type LogRetrieval struct {
-	Logs         []*pb.LogEntry
-	Continuation Continuation
+	Logs     []*pb.LogEntry
+	position cursorPosition
 }
 
 func (query *LogQuery) SegmentPassesFilter(segment logSegment) (bool, error) {
@@ -128,7 +129,11 @@ func (fl *FileLog) LogChannel() LogEntryChannel {
 	return fl.messagesWithOffsets
 }
 
-func (fl *FileLog) Retrieve(ctx context.Context, query *LogQuery, continuation *Continuation) (*LogRetrieval, error) {
+func (fl *FileLog) Retrieve(ctx context.Context, query *LogQuery) (*LogRetrieval, error) {
+	return fl.retrieve(ctx, query, nil)
+}
+
+func (fl *FileLog) retrieve(ctx context.Context, query *LogQuery, continuation *cursorPosition) (*LogRetrieval, error) {
 	logEntries := make([]*pb.LogEntry, 0)
 	scannedLogs := 0
 
@@ -200,7 +205,7 @@ func (fl *FileLog) Retrieve(ctx context.Context, query *LogQuery, continuation *
 
 	return &LogRetrieval{
 		Logs: logEntries,
-		Continuation: Continuation{
+		position: cursorPosition{
 			FilePosition:   continuationPosition,
 			LastOffsetRead: lastOffset,
 		},

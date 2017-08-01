@@ -9,7 +9,7 @@ import (
 // positions allowing indexless reads over large chunks of logfile.
 type Cursor struct {
 	ctx            context.Context
-	continuation   Continuation
+	position       cursorPosition
 	logsPerRequest uint32
 	query          LogQuery
 	unreadMessages LogEntryChannel
@@ -23,22 +23,22 @@ func (c *Cursor) Consume(topic Log, f func(interface{}) error) error {
 	// Page through log until no more messages show up, then return control to caller
 	for {
 		var logQuery *LogQuery
-		if c.continuation.FilePosition < 0 {
+		if c.position.FilePosition < 0 {
 			logQuery = &c.query
 			logQuery.MaxMessages = c.logsPerRequest
 		} else {
 			logQuery = &LogQuery{
-				StartOffset: c.continuation.LastOffsetRead + 1,
+				StartOffset: c.position.LastOffsetRead + 1,
 				MaxMessages: c.logsPerRequest,
 			}
 		}
 
-		read, err := topic.Retrieve(c.ctx, logQuery, &c.continuation)
+		read, err := topic.retrieve(c.ctx, logQuery, &c.position)
 		if err != nil {
 			return err
 		}
 
-		lastOffset := c.continuation.LastOffsetRead
+		lastOffset := c.position.LastOffsetRead
 		for _, log := range read.Logs {
 			lastOffset = log.GetOffset()
 			if err := f(logToResponse(log)); err != nil {
@@ -47,11 +47,11 @@ func (c *Cursor) Consume(topic Log, f func(interface{}) error) error {
 		}
 
 		// If we didn't get any new logs, we're done
-		if len(read.Logs) == 0 || lastOffset == c.continuation.LastOffsetRead {
+		if len(read.Logs) == 0 || lastOffset == c.position.LastOffsetRead {
 			return nil
 		}
 
-		c.continuation = read.Continuation
+		c.position = read.position
 	}
 }
 
@@ -60,7 +60,7 @@ func NewCursor(ctx context.Context, query *LogQuery, logChannel LogEntryChannel,
 	return &Cursor{
 		ctx: ctx,
 		// FilePos -1 signals that the LogQuery is to be used to start
-		continuation: Continuation{
+		position: cursorPosition{
 			FilePosition: -1,
 		},
 		query:          *query,
