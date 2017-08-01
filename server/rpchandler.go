@@ -126,7 +126,7 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 
 		c := storage.NewCursor(stream.Context(), filter, ch, 1000)
 
-		if err := c.consume(topic, stream.SendMsg); err != nil {
+		if err := c.Consume(topic, stream.SendMsg); err != nil {
 			return err
 		}
 		for {
@@ -141,7 +141,7 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 				// Done, remove
 				return nil
 			case <-ch:
-				if err := c.consume(topic, stream.SendMsg); err != nil {
+				if err := c.Consume(topic, stream.SendMsg); err != nil {
 					return err
 				}
 			}
