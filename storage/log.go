@@ -194,24 +194,24 @@ func (fl *FileLog) retrieve(ctx context.Context, query *LogQuery, continuation *
 	fl.logger.Infof("Scanned %d logs for %d returned messages",
 		scannedLogs, len(logEntries))
 
-	continuationPosition := positionEnd
-
 	// If we're at the end of the segment but not the end of all segments, reset file position
 	// TODO: this is pretty nasty. Should have explicit signaling of "finished" segments vs. "in-progress"
 	// segments
 	if lastSegment >= 0 && lastOffset == segments[lastSegment].EndOffset() && len(segments)-1 > lastSegment {
-		continuationPosition = -1
+		positionEnd = -1
 	}
 
 	return &LogRetrieval{
 		Logs: logEntries,
 		position: cursorPosition{
-			FilePosition:   continuationPosition,
+			FilePosition:   positionEnd,
 			LastOffsetRead: lastOffset,
 		},
 	}, nil
 }
 
+// Append appends pb.LogEntry to the log and returns a slice of offset positions
+// assigned to each entry.
 func (fl *FileLog) Append(ctx context.Context, logs []*pb.LogEntry) ([]uint64, error) {
 	fl.Lock()
 	defer fl.Unlock()
@@ -223,7 +223,7 @@ func (fl *FileLog) Append(ctx context.Context, logs []*pb.LogEntry) ([]uint64, e
 			fl.logger.Debugf("Appending: %+v", log)
 			log.Offset = fl.nextOffset
 			newOffsets[i] = fl.nextOffset
-			fl.nextOffset += 1
+			fl.nextOffset++
 
 			fl.currentSegment.Append(ctx, log)
 		}
@@ -251,6 +251,7 @@ func (fl *FileLog) Append(ctx context.Context, logs []*pb.LogEntry) ([]uint64, e
 	return newOffsets, nil
 }
 
+// Length Returns the length of the log, does include deleted segments.
 func (fl *FileLog) Length() uint64 {
 	fl.RLock()
 	defer fl.RUnlock()
@@ -258,6 +259,9 @@ func (fl *FileLog) Length() uint64 {
 	return fl.nextOffset
 }
 
+// Close closes the log, closing the underlying segments and their files before
+// marking this log as closed. Periodic maintenance is halted and the
+// LogChannel is closed.
 func (fl *FileLog) Close() error {
 	fl.Lock()
 	defer fl.Unlock()
@@ -385,6 +389,8 @@ func (fl *FileLog) logMaintenance() {
 	}
 }
 
+// OpenLogs opens all logs in a given data directory, returning a map of
+// topic name to log implementation
 func OpenLogs(logger *zap.SugaredLogger, directory string) (map[string]Log, error) {
 	entries, err := ioutil.ReadDir(directory)
 	if err != nil {
@@ -408,11 +414,11 @@ func OpenLogs(logger *zap.SugaredLogger, directory string) (map[string]Log, erro
 	return logs, nil
 }
 
-type ByNumericalFilename []os.FileInfo
+type byNumericalFilename []os.FileInfo
 
-func (nf ByNumericalFilename) Len() int      { return len(nf) }
-func (nf ByNumericalFilename) Swap(i, j int) { nf[i], nf[j] = nf[j], nf[i] }
-func (nf ByNumericalFilename) Less(i, j int) bool {
+func (nf byNumericalFilename) Len() int      { return len(nf) }
+func (nf byNumericalFilename) Swap(i, j int) { nf[i], nf[j] = nf[j], nf[i] }
+func (nf byNumericalFilename) Less(i, j int) bool {
 
 	// Use path names
 	pathA := nf[i].Name()
@@ -455,7 +461,7 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string, confi
 		return nil, err
 	}
 
-	sort.Sort(ByNumericalFilename(entries))
+	sort.Sort(byNumericalFilename(entries))
 
 	segments := make([]logSegment, 0)
 
