@@ -3,20 +3,17 @@ package storage
 import (
 	"bufio"
 	"fmt"
-	"github.com/gogo/protobuf/types"
-	"github.com/pkg/errors"
-	pb "github.com/xorlev/slogd/proto"
-	"go.uber.org/zap"
-	"golang.org/x/net/context"
 	"io"
 	"os"
 	"path"
 	"sync"
 	"time"
-)
 
-const (
-	BYTES_BETWEEN_INDEX = 4096
+	"github.com/gogo/protobuf/types"
+	"github.com/pkg/errors"
+	pb "github.com/xorlev/slogd/proto"
+	"go.uber.org/zap"
+	"golang.org/x/net/context"
 )
 
 type logSegment interface {
@@ -36,7 +33,9 @@ type fileLogSegment struct {
 	logSegment
 	sync.RWMutex
 
-	logger       *zap.SugaredLogger
+	config *pb.TopicConfig
+	logger *zap.SugaredLogger
+
 	basePath     string
 	closed       bool
 	file         *os.File
@@ -62,7 +61,14 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 	defer s.RUnlock()
 
 	if s.closed {
-		return retrieveError(errors.New("Segment is closed."))
+		return retrieveError(errors.New("segment is closed"))
+	}
+
+	s.logger.Debugf("query = %+v", logFilter)
+
+	// Elide read, at end of segment
+	if filePosition == s.filePosition {
+		return []*pb.LogEntry{}, 0, s.filePosition, nil
 	}
 
 	startedAt := time.Now()
@@ -146,7 +152,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 		} else {
 			// Found the end of the log
 			if err == io.EOF {
-				s.logger.Debugf("End of segment, EOF")
+				s.logger.Debugf("End of segment, EOF %d", positionStart+bytesRead)
 				break
 			} else {
 				return retrieveError(errors.Wrap(err, "Error while scanning segment"))
@@ -214,7 +220,7 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 	s.filePosition += int64(bytesWritten)
 
 	// Index if this is the first item or if it's been BYTES_BETWEEN_INDEX since the last index
-	if s.positionOfLastIndex == 0 || s.filePosition-s.positionOfLastIndex >= BYTES_BETWEEN_INDEX {
+	if s.positionOfLastIndex == 0 || s.filePosition-s.positionOfLastIndex >= int64(s.config.IndexAfterBytes) {
 		filepos := s.filePosition - int64(bytesWritten)
 
 		s.offsetIndex.IndexKey(log.GetOffset(), filepos)
@@ -326,7 +332,7 @@ func (s *fileLogSegment) Close() error {
 	return nil
 }
 
-func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64) (logSegment, error) {
+func openSegment(logger *zap.SugaredLogger, config *pb.TopicConfig, basePath string, startOffset uint64) (logSegment, error) {
 	// TODO move to segment
 	filename := fmt.Sprintf("/%d.log", startOffset)
 	filename = path.Join(basePath, filename)
@@ -349,7 +355,7 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 
 	nextOffset := startOffset
 	logEntry := &pb.LogEntry{}
-	reader := NewDelimitedReader(bufio.NewReader(file), MESSAGE_SIZE_LIMIT)
+	reader := NewDelimitedReader(bufio.NewReader(file), int(config.MessageSizeLimit))
 	var startTime *time.Time = nil
 	var endTime *time.Time = nil
 	for {
@@ -399,6 +405,7 @@ func openSegment(logger *zap.SugaredLogger, basePath string, startOffset uint64)
 	fileWriter := bufio.NewWriter(file)
 
 	fls := &fileLogSegment{
+		config:        config,
 		logger:        ctxLogger,
 		basePath:      basePath,
 		file:          file,
@@ -461,9 +468,9 @@ func (s *fileLogSegment) rebuildIndex(store *kvStore, keyFn func(*pb.LogEntry) u
 	// Rewind segment to start of file
 	s.file.Seek(0, io.SeekStart)
 
-	var lastIndexPosition int64 = 0
+	var lastIndexPosition int64
 
-	reader := NewDelimitedReader(bufio.NewReader(s.file), MESSAGE_SIZE_LIMIT)
+	reader := NewDelimitedReader(bufio.NewReader(s.file), int(s.config.MessageSizeLimit))
 	logEntry := &pb.LogEntry{}
 	position := int64(0)
 	for {
@@ -476,7 +483,7 @@ func (s *fileLogSegment) rebuildIndex(store *kvStore, keyFn func(*pb.LogEntry) u
 			}
 		}
 
-		if lastIndexPosition == 0 || position-lastIndexPosition >= BYTES_BETWEEN_INDEX {
+		if lastIndexPosition == 0 || position-lastIndexPosition >= int64(s.config.IndexAfterBytes) {
 			if err := store.IndexKey(keyFn(logEntry), valueFn(position, logEntry)); err != nil {
 				return err
 			}

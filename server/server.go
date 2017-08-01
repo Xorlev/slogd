@@ -97,9 +97,6 @@ func Run(logger *zap.SugaredLogger, rpcAddr string, httpAddr string, dataDir str
 	return nil
 }
 
-// type StreamServerInterceptor func(srv interface{}, ss ServerStream, info *StreamServerInfo, handler StreamHandler) error
-// type UnaryServerInterceptor func(ctx context.Context, req interface{}, info *UnaryServerInfo, handler UnaryHandler) (resp interface{}, err error)
-
 func requestStartInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
 	ctx = context.WithValue(ctx, "requestStart", time.Now())
 

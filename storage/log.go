@@ -1,12 +1,6 @@
 package storage
 
 import (
-	"github.com/gogo/protobuf/types"
-	"github.com/pkg/errors"
-	"github.com/xorlev/slogd/internal"
-	pb "github.com/xorlev/slogd/proto"
-	"go.uber.org/zap"
-	"golang.org/x/net/context"
 	"io/ioutil"
 	"os"
 	"path"
@@ -15,6 +9,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gogo/protobuf/types"
+	"github.com/pkg/errors"
+	"github.com/xorlev/slogd/internal"
+	pb "github.com/xorlev/slogd/proto"
+	"go.uber.org/zap"
+	"golang.org/x/net/context"
 )
 
 const (
@@ -54,43 +55,59 @@ type Continuation struct {
 	FilePosition   int64
 }
 
+type position int
+
+const (
+	LATEST position = iota
+	EARLIEST
+)
+
 type LogQuery struct {
-	StartOffset  uint64
 	MaxMessages  uint32
+	Position     position
+	StartOffset  uint64
 	Timestamp    time.Time
 	Continuation Continuation
 }
 
 func NewLogQuery(req *pb.GetLogsRequest) (*LogQuery, error) {
-	var t time.Time = time.Time{}
+	filter := &LogQuery{
+		MaxMessages: uint32(req.GetMaxMessages()),
+	}
 
-	if req.GetTimestamp() != nil {
-		var err error = nil
-		t, err = types.TimestampFromProto(req.GetTimestamp())
+	switch req.StartAt.(type) {
+	case *pb.GetLogsRequest_Timestamp:
+		t, err := types.TimestampFromProto(req.GetTimestamp())
 		if err != nil {
 			return nil, errors.Errorf("Bad timestamp: %v", req.GetTimestamp())
 		}
-	}
-
-	filter := &LogQuery{
-		StartOffset: req.GetOffset(),
-		MaxMessages: uint32(req.GetMaxMessages()),
-		Timestamp:   t,
+		filter.Timestamp = t
+	case *pb.GetLogsRequest_Offset:
+		filter.StartOffset = req.GetOffset()
+	case *pb.GetLogsRequest_Position_:
+		switch req.GetPosition() {
+		case pb.GetLogsRequest_LATEST:
+			filter.Position = LATEST
+		case pb.GetLogsRequest_EARLIEST:
+			filter.Position = EARLIEST
+		}
+	case nil:
+	default:
 	}
 
 	return filter, nil
 }
 
-func (lf *LogQuery) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
-	if !lf.Timestamp.IsZero() {
+func (query *LogQuery) LogPassesFilter(entry *pb.LogEntry) (bool, error) {
+	if !query.Timestamp.IsZero() {
 		ts, err := types.TimestampFromProto(entry.GetTimestamp())
 		if err != nil {
 			return false, err
 		}
 
-		return ts == lf.Timestamp || ts.After(lf.Timestamp), nil
-	} else if lf.StartOffset > 0 {
-		return entry.GetOffset() >= lf.StartOffset, nil
+		return ts == query.Timestamp || ts.After(query.Timestamp), nil
+	} else if query.StartOffset > 0 {
+		return entry.GetOffset() >= query.StartOffset, nil
 	}
 
 	return true, nil
@@ -101,9 +118,9 @@ type LogRetrieval struct {
 	Continuation Continuation
 }
 
-func (lf *LogQuery) SegmentPassesFilter(segment logSegment) (bool, error) {
-	offsetMatches := segment.EndOffset() >= lf.StartOffset
-	timestampMatches := !segment.StartTime().IsZero() && !segment.EndTime().IsZero() && segment.EndTime().After(lf.Timestamp)
+func (query *LogQuery) SegmentPassesFilter(segment logSegment) (bool, error) {
+	offsetMatches := segment.EndOffset() >= query.StartOffset
+	timestampMatches := !segment.StartTime().IsZero() && !segment.EndTime().IsZero() && !query.Timestamp.IsZero() && segment.EndTime().After(query.Timestamp)
 
 	return offsetMatches || timestampMatches, nil
 }
@@ -116,7 +133,7 @@ func (fl *FileLog) LogChannel() LogEntryChannel {
 	return fl.messagesWithOffsets
 }
 
-func (fl *FileLog) Retrieve(ctx context.Context, lf *LogQuery, continuation *Continuation) (*LogRetrieval, error) {
+func (fl *FileLog) Retrieve(ctx context.Context, query *LogQuery, continuation *Continuation) (*LogRetrieval, error) {
 	logEntries := make([]*pb.LogEntry, 0)
 	scannedLogs := 0
 
@@ -130,7 +147,8 @@ func (fl *FileLog) Retrieve(ctx context.Context, lf *LogQuery, continuation *Con
 	// the number of messages requested. May span multiple segments.
 	var lastOffset uint64 = 0
 	var positionEnd int64 = -1
-	for _, segment := range segments {
+	var lastSegment int = -1
+	for i, segment := range segments {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -139,18 +157,19 @@ func (fl *FileLog) Retrieve(ctx context.Context, lf *LogQuery, continuation *Con
 
 		// TODO: add EndTimestamp?
 		// Evaluate LogFilter against segment
-		segmentMatches, err := lf.SegmentPassesFilter(segment)
+		segmentMatches, err := query.SegmentPassesFilter(segment)
+		// fl.logger.Debugf("Segment matches filter: %+v, %+v", lf, segment)
 		if err != nil {
 			return nil, err
 		}
 
-		if segmentMatches && messagesRead < lf.MaxMessages {
+		if segmentMatches && messagesRead < query.MaxMessages {
 			var filePosition int64 = -1
 			if continuation != nil {
 				filePosition = continuation.FilePosition
 			}
 
-			segmentLogs, scanned, segmentPositionEnd, err := segment.Retrieve(ctx, lf, filePosition, lf.MaxMessages-messagesRead)
+			segmentLogs, scanned, segmentPositionEnd, err := segment.Retrieve(ctx, query, filePosition, query.MaxMessages-messagesRead)
 			if err != nil {
 				return nil, errors.Wrap(err, "Error reading from segment")
 			}
@@ -159,20 +178,35 @@ func (fl *FileLog) Retrieve(ctx context.Context, lf *LogQuery, continuation *Con
 
 			if len(segmentLogs) > 0 {
 				lastOffset = segmentLogs[len(segmentLogs)-1].Offset
+
+				// TODO clone
+				query.StartOffset = lastOffset + 1
 			}
 
 			scannedLogs += scanned
 			positionEnd = segmentPositionEnd
+			lastSegment = i
+			//
+			// return nil, errors.New("TODO: Fix segment bounds")
 		}
 	}
 
 	fl.logger.Infof("Scanned %d logs for %d returned messages",
 		scannedLogs, len(logEntries))
 
+	continuationPosition := positionEnd
+
+	// If we're at the end of the segment but not the end of all segments, reset file position
+	// TODO: this is pretty nasty. Should have explicit signaling of "finished" segments vs. "in-progress"
+	// segments
+	if lastSegment >= 0 && lastOffset == segments[lastSegment].EndOffset() && len(segments)-1 > lastSegment {
+		continuationPosition = -1
+	}
+
 	return &LogRetrieval{
 		Logs: logEntries,
 		Continuation: Continuation{
-			FilePosition:   positionEnd,
+			FilePosition:   continuationPosition,
 			LastOffsetRead: lastOffset,
 		},
 	}, nil
@@ -264,7 +298,7 @@ func (fl *FileLog) rollLog() error {
 	}
 
 	// Open a new log segment
-	newSegment, err := openSegment(fl.logger, fl.basePath, fl.nextOffset)
+	newSegment, err := openSegment(fl.logger, fl.config, fl.basePath, fl.nextOffset)
 	if err != nil {
 		return err
 	}
@@ -364,7 +398,7 @@ func OpenLogs(logger *zap.SugaredLogger, directory string) (map[string]Log, erro
 			// todo validate topic name
 			topic := entry.Name()
 
-			logs[topic], err = NewFileLog(logger, directory, topic)
+			logs[topic], err = NewFileLog(logger, directory, topic, DefaultConfig())
 			if err != nil {
 				return nil, errors.Wrapf(err, "Error opening log: %s", topic)
 			}
@@ -398,11 +432,8 @@ func (nf ByNumericalFilename) Less(i, j int) bool {
 	return a < b
 }
 
-func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*FileLog, error) {
+func NewFileLog(logger *zap.SugaredLogger, directory string, topic string, config *pb.TopicConfig) (*FileLog, error) {
 	basePath := path.Join(directory, topic)
-
-	// TODO: read config from disk
-	config := defaultConfig()
 
 	ctxLogger := logger.With(
 		"topic", topic,
@@ -430,7 +461,7 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 
 	if len(entries) == 0 {
 		// for each segment...
-		fls, err := openSegment(logger, basePath, 0)
+		fls, err := openSegment(logger, config, basePath, 0)
 		if err != nil {
 			return nil, errors.Wrap(err, "Error creating new segment")
 		}
@@ -447,7 +478,7 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 					return nil, errors.Wrap(err, "Error parsing log filename")
 				}
 
-				fls, err := openSegment(ctxLogger, basePath, startOffset)
+				fls, err := openSegment(ctxLogger, config, basePath, startOffset)
 				if err != nil {
 					return nil, errors.Wrapf(err, "Error opening segment: %s/%d.log", basePath, startOffset)
 				}
@@ -489,11 +520,12 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 	return fl, nil
 }
 
-func defaultConfig() *pb.TopicConfig {
+func DefaultConfig() *pb.TopicConfig {
 	return &pb.TopicConfig{
 		MessageSizeLimit:          4 * 1024 * 1024,
-		SegmentSizeLimit:          16 * 1024 * 1024,
-		RotateSegmentAfterSeconds: 6 * 3600,
+		SegmentSizeLimit:          1 * 1024 * 1024,
+		IndexAfterBytes:           4096,
+		RotateSegmentAfterSeconds: 24 * 3600,
 		StaleSegmentSeconds:       720 * 3600,
 		LogMaintenancePeriod:      300,
 	}

@@ -3,21 +3,22 @@ package storage
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/pkg/errors"
-	"go.uber.org/zap"
 	"io"
 	"math"
 	"os"
 	"path"
 	"sync"
+
+	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 // KV Storage (e.g. key -> filepos, or key -> incremental crc)
 
 const (
-	KEY_SIZE   = 8
-	VALUE_SIZE = 8
-	INDEX_SIZE = KEY_SIZE + VALUE_SIZE
+	keySize   = 8
+	valueSize = 8
+	indexSize = keySize + valueSize
 )
 
 type kvStore struct {
@@ -34,7 +35,7 @@ type kvStore struct {
 }
 
 func (kvs *kvStore) Find(targetKey uint64) (uint64, error) {
-	buffer := make([]byte, INDEX_SIZE)
+	buffer := make([]byte, indexSize)
 	file, err := os.OpenFile(kvs.filename, os.O_CREATE|os.O_RDWR|os.O_SYNC, 0666)
 	if err != nil {
 		return 0, err
@@ -52,14 +53,14 @@ func (kvs *kvStore) Find(targetKey uint64) (uint64, error) {
 	for lo <= high {
 		mid := int(math.Ceil(float64(high)/2.0 + float64(lo)/2.0))
 
-		kvs.logger.Debugf("Searching: lo = %d, high = %d, mid = %d", lo, high, mid)
+		// kvs.logger.Debugf("Searching: lo = %d, high = %d, mid = %d", lo, high, mid)
 
 		foundKey, filePos, err := kvs.readEntryAt(file, int64(mid), buffer)
 		if err != nil {
 			return 0, err
 		}
 
-		kvs.logger.Debugf("foundKey: %d, targetKey: %d", foundKey, targetKey)
+		// kvs.logger.Debugf("foundKey: %d, targetKey: %d", foundKey, targetKey)
 
 		if foundKey < targetKey {
 			// As close as we get!
@@ -80,30 +81,30 @@ func (kvs *kvStore) Find(targetKey uint64) (uint64, error) {
 			high = mid - 1
 		} else if foundKey == targetKey || lo == high {
 			// found key exactly
-			kvs.logger.Debugf("Found key %d at file position %d", foundKey, filePos)
+			// kvs.logger.Debugf("Found key %d at file position %d", foundKey, filePos)
 			return filePos, nil
 		}
 
-		iterations += 1
+		iterations++
 
 		if iterations == 200 {
 			return 0, errors.New("Failed to converge on index")
 		}
 	}
 
-	kvs.logger.Debugf("Failed to find key %d in index", targetKey)
+	kvs.logger.Infof("Failed to find key %d in index", targetKey)
 
 	return 0, nil
 }
 
 func (kvs *kvStore) readEntryAt(file *os.File, position int64, buffer []byte) (uint64, uint64, error) {
-	file.Seek(position*INDEX_SIZE, io.SeekStart)
+	file.Seek(position*indexSize, io.SeekStart)
 	n, err := file.Read(buffer)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	if n < INDEX_SIZE {
+	if n < indexSize {
 		return 0, 0, errors.New("Incomplete index entry, index corrupt")
 	}
 
@@ -139,8 +140,8 @@ func (kvs *kvStore) IndexKey(key uint64, value int64) error {
 
 	kvs.logger.Debugf("Indexing key %d with value %d", key, value)
 
-	binary.BigEndian.PutUint64(kvs.buffer[:KEY_SIZE], key)
-	binary.BigEndian.PutUint64(kvs.buffer[KEY_SIZE:KEY_SIZE+VALUE_SIZE], uint64(value))
+	binary.BigEndian.PutUint64(kvs.buffer[:keySize], key)
+	binary.BigEndian.PutUint64(kvs.buffer[keySize:keySize+valueSize], uint64(value))
 
 	bytesWritten, err := kvs.file.Write(kvs.buffer)
 	if err != nil {
@@ -165,7 +166,7 @@ func (kvs *kvStore) Size() int {
 
 // Index size in entries
 func (kvs *kvStore) size() int {
-	return int(kvs.filePosition) / INDEX_SIZE
+	return int(kvs.filePosition) / indexSize
 }
 
 // Index size in bytes
@@ -245,6 +246,7 @@ func (kvs *kvStore) Close() error {
 	return nil
 }
 
+// OpenOrCreateStore Opens an existing KVStore or creates a new one for the given path/suffix/startKey
 func OpenOrCreateStore(logger *zap.SugaredLogger, basePath string, suffix string, startKey uint64) (*kvStore, error) {
 	filename := fmt.Sprintf("/%d.%s", startKey, suffix)
 	filename = path.Join(basePath, filename)
@@ -268,7 +270,7 @@ func OpenOrCreateStore(logger *zap.SugaredLogger, basePath string, suffix string
 		return nil, err
 	}
 
-	logger.Debugw("Opening index",
+	logger.Debugw("Opening "+suffix,
 		"filename", filename,
 		"startKey", startKey,
 	)
@@ -280,7 +282,7 @@ func OpenOrCreateStore(logger *zap.SugaredLogger, basePath string, suffix string
 		filePosition: endOfFile,
 		startKey:     0,
 		endKey:       0,
-		buffer:       make([]byte, INDEX_SIZE),
+		buffer:       make([]byte, indexSize),
 	}
 
 	// If index is non-zero sized, figure out the last key we have indexed

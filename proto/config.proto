@@ -28,12 +28,15 @@ message TopicConfig {
 	// segment_size_limit (imagine: a segment of size segment_size_limit-1)
 	uint64 segment_size_limit = 2;
 
+	// New index entries are created every index_after_bytes of logfile.
+	uint64 index_after_bytes = 3;
+
 	// Rotate this segment after this period of time
-	uint64 rotate_segment_after_seconds = 3;
+	uint64 rotate_segment_after_seconds = 4;
 
 	// Period before a segment is considered stale and purged from the filesystem.
-	uint64 stale_segment_seconds = 4;
+	uint64 stale_segment_seconds = 5;
 
 	// Period between runs of maintenance tasks (e.g. log roller, stale segment remover)
-	uint64 log_maintenance_period = 5;
+	uint64 log_maintenance_period = 6;
 }

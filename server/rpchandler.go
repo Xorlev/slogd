@@ -1,14 +1,15 @@
 package server
 
 import (
+	"sync"
+	"sync/atomic"
+
 	pb "github.com/xorlev/slogd/proto"
 	storage "github.com/xorlev/slogd/storage"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"sync"
-	"sync/atomic"
 )
 
 type StructuredLogServer struct {
@@ -76,7 +77,7 @@ func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 
 	// Auto-create new topic
 	if !ok {
-		log, err := storage.NewFileLog(s.logger, s.config.DataDir, req.GetTopic())
+		log, err := storage.NewFileLog(s.logger, s.config.DataDir, req.GetTopic(), storage.DefaultConfig())
 
 		if err != nil {
 			s.Unlock()
@@ -123,7 +124,7 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 
 		s.logger.Debugf("Filter = %+v", filter)
 
-		c := newCursor(stream.Context(), filter, ch)
+		c := storage.NewCursor(stream.Context(), filter, ch, 1000)
 
 		if err := c.consume(topic, stream.SendMsg); err != nil {
 			return err
