@@ -23,10 +23,7 @@ built on top of gRPC and protocol buffers, while retaining a HTTP/JSON interface
 clients.
 
 I built slogd as a way to have Kafka-like semantics for a crawl/transform/notify infrastructure
-previously running on top of hacked-together IPC via Redis. A Ruby daemon processed tasks
-received via Redis, published from inside of Python in a gloriously hacky manner.
-
-Additionally, slogd powers a custom analytics stack.
+previously running on top of Redis.
 
 ## Why should I use slogd?
 
@@ -48,27 +45,28 @@ aka the Kafka team.
 
 ### Topics
 
-Topics are topics. Each topic has its own directory, set of logfiles and indices, and its own
-monotonically-increasing message offset. Each message publish writes to an append-only logfile
-segment.
+Topics are collections of messages. Each topic has its own directory, set of logfiles and indices, 
+and its own monotonically-increasing message offset. Each message publish writes to an append-only 
+logfile segment.
 
 Topics are comprised of multiple segments. Segments are contiguous sections of logfile which are
 created as each segment becomes too old or too big. slogd attempts to retain data no longer than
 the topic is configured for. Segment age (for purposes of removal) is determined by the timestamp
 of the newest message, whereas segment creation time is evaluated on the timestamp of the oldest 
-message. Proactive segment rolling is based on segment creation time.
+message. Time-based segment rolling is based on segment creation time.
 
 By default, segments are created every 6 hours or 16MiB. Each segment has two accompanying indices,
 an index on offset and an index on publish timestamp. These allow for efficiently seeking through
-the log.
+the log on either attribute.
 
 ### Durability
 
 Slogd provides some durability guarantees. Upon receipt of an successful AppendLogs response, the data
 in the request has been flushed to disk. However, it is possible that a large batch of messages may
-trigger an early flush of data to disk. If slogd were to exit before a final flush, it may lead to some
-messages being persisted and some lost messages, though should never result in corrupt segments. In that
-case, the client would not have received a successful response and would retry the request.
+trigger an early flush of data to disk before AppendLogs retruns. If slogd were to exit before a final flush, 
+it may lead to some messages being persisted and some lost messages, though should never result in corrupt 
+segments. In that case, the client would not have received a successful response and would retry the request,
+potentially leading to duplicate messages.
 
 Slogd may opt to implement transactional semantics in the future (prepare, append, {commit/abort}) to provide
 stronger guarantees wherein an entire batch of messages will be committed to the log or not at all.
@@ -82,16 +80,18 @@ This represents the order the message has in the topic. Offset 0 is the first me
 second and so on.
 
 2) Timestamp. This is assigned by slogd at publish time, also monotonically increasing. That is,
-m[n].timestamp < m[n+1].timestamp for all messages in the log. TODO: semantics around same-time delivery.
+m[n].timestamp < m[n+1].timestamp for all messages in the log. TODO: define semantics around same-time delivery.
 
 3) Payload. This is actually 2 fields: `protobuf` and `raw_bytes`. Only one may be set at any
 given time (proto3 oneof). `protobuf` is a `google.protobuf.Any` type, whereas `raw_bytes` is,
-well, raw bytes.
+well, raw bytes. `protobuf` should probably be used between processes, but `raw_bytes` can be used for initial
+entry into the system, e.g. raw HTTP logs.
 
 4) Annotations. This is a map of string to string KV pairs. These can be used to have slogd filter
-messages at retrieval time. For instance, `userid -> 5` could be matched using an expression `k:userid v:5`,
+messages at retrieval time. For instance, `userid == 5` could be matched using an expression `k:userid v:5`,
 but expressions may be arbitrarily complex. Individual clauses are Golang regexp and can be combined together, e.x.
-`(k:userid v:vip\-[0-9]+) OR (k:important)`. 
+`(k:userid v:vip\-[0-9]+) OR (k:important)`. These filters are streaming filters applied during retrieval, all
+non-matching messages will still be read from disk, even if they're not returned to the client.
 
 ### Message types
 
