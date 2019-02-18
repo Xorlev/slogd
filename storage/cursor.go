@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"errors"
+
 	"golang.org/x/net/context"
 )
 

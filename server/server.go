@@ -1,12 +1,13 @@
 package server
 
 import (
-	"go.uber.org/zap"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"time"
+
+	"go.uber.org/zap"
 
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_zap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
@@ -15,6 +16,8 @@ import (
 	"google.golang.org/grpc"
 
 	pb "github.com/xorlev/slogd/proto"
+
+	"net/http/pprof"
 )
 
 func Run(logger *zap.SugaredLogger, rpcAddr string, httpAddr string, dataDir string) error {
@@ -28,13 +31,14 @@ func Run(logger *zap.SugaredLogger, rpcAddr string, httpAddr string, dataDir str
 
 	logger.Infof("Starting RPC listener on %s", rpcAddr)
 
+	desugaredLogger := logger.Desugar()
 	grpcServer := grpc.NewServer(
 		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
-			grpc_zap.StreamServerInterceptor(logger.Desugar()),
+			grpc_zap.StreamServerInterceptor(desugaredLogger),
 		)),
 		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
 			requestStartInterceptor,
-			grpc_zap.UnaryServerInterceptor(logger.Desugar()),
+			grpc_zap.UnaryServerInterceptor(desugaredLogger),
 		)))
 
 	config := &Config{
@@ -56,7 +60,17 @@ func Run(logger *zap.SugaredLogger, rpcAddr string, httpAddr string, dataDir str
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Addr: httpAddr, Handler: mux}
+
+	r := http.NewServeMux()
+	r.HandleFunc("/debug/pprof/", pprof.Index)
+	r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	r.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	r.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	r.Handle("/", mux)
+
+	srv := &http.Server{Addr: httpAddr, Handler: r}
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)

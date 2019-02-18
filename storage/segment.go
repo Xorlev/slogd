@@ -42,7 +42,6 @@ type fileLogSegment struct {
 	filename     string
 	filePosition int64 // TODO: ensure reads never go beyond filePosition
 	fileWriter   *bufio.Writer
-	// offsetIndex  Index
 
 	offsetIndex    *kvStore
 	timestampIndex *kvStore

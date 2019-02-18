@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 
 	pb "github.com/xorlev/slogd/proto"
-	storage "github.com/xorlev/slogd/storage"
+	"github.com/xorlev/slogd/storage"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"

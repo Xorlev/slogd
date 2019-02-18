@@ -286,8 +286,8 @@ func (fl *FileLog) Close() error {
 func (fl *FileLog) rollLogIfNecessary() error {
 	// Called from write lock
 
-	rotateSegmentAfterSeconds := time.Duration(fl.config.RotateSegmentAfterSeconds) * time.Second
-	segmentAgeHorizon := time.Now().Add(-rotateSegmentAfterSeconds)
+	rotateSegmentAfter := time.Duration(fl.config.RotateSegmentAfterSeconds) * time.Second
+	segmentAgeHorizon := time.Now().Add(-rotateSegmentAfter)
 
 	// If segment is too big or was created too long ago, roll the log
 	if fl.currentSegment.SizeBytes() >= fl.config.SegmentSizeLimit || fl.currentSegment.StartTime().Before(segmentAgeHorizon) {
