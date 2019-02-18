@@ -89,7 +89,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 		if !logFilter.Timestamp.IsZero() {
 			offset, err := s.timestampIndex.Find(uint64(logFilter.Timestamp.UnixNano()))
 			if err != nil {
-				return retrieveError(errors.Wrap(err, "Failed to search index for start timestamp"))
+				return retrieveError(errors.Wrap(err, "Failed to search index for start timestamp."))
 			}
 
 			positionStart, err = s.offsetIndex.Find(offset)
@@ -110,7 +110,9 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 	}
 
 	s.logger.Debugf("Seeking to position %v", positionStart)
-	file.Seek(int64(positionStart), io.SeekStart)
+	if _, err := file.Seek(int64(positionStart), io.SeekStart); err != nil {
+		return retrieveError(errors.Wrap(err, "Failed to seek to position."))
+	}
 
 	// Read and collect messages from log
 	reader := NewDelimitedReader(bufio.NewReader(file), int(s.config.MessageSizeLimit))

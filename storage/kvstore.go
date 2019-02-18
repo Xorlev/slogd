@@ -98,7 +98,9 @@ func (kvs *kvStore) Find(targetKey uint64) (uint64, error) {
 }
 
 func (kvs *kvStore) readEntryAt(file *os.File, position int64, buffer []byte) (uint64, uint64, error) {
-	file.Seek(position*indexSize, io.SeekStart)
+	if _, err := file.Seek(position*indexSize, io.SeekStart); err != nil {
+		return 0, 0, err
+	}
 	n, err := file.Read(buffer)
 	if err != nil {
 		return 0, 0, err
@@ -152,7 +154,9 @@ func (kvs *kvStore) IndexKey(key uint64, value int64) error {
 
 	kvs.filePosition += int64(bytesWritten)
 
-	kvs.flush()
+	if err := kvs.flush(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -238,7 +242,9 @@ func (kvs *kvStore) Close() error {
 	kvs.Lock()
 	defer kvs.Unlock()
 
-	kvs.flush()
+	if err := kvs.flush(); err != nil {
+		return err
+	}
 	if err := kvs.file.Close(); err != nil {
 		return err
 	}

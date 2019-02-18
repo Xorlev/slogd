@@ -225,13 +225,17 @@ func (fl *FileLog) Append(ctx context.Context, logs []*pb.LogEntry) ([]uint64, e
 			newOffsets[i] = fl.nextOffset
 			fl.nextOffset++
 
-			fl.currentSegment.Append(ctx, log)
+			if err := fl.currentSegment.Append(ctx, log); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	// Flush the file for durability
 	// TODO: setting to allow flush on each append
-	fl.currentSegment.Flush()
+	if err := fl.currentSegment.Flush(); err != nil {
+		return nil, err
+	}
 
 	// Roll log segment if necessary
 	if err := fl.rollLogIfNecessary(); err != nil {
