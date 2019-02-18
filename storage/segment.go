@@ -222,8 +222,12 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 	if s.positionOfLastIndex == 0 || s.filePosition-s.positionOfLastIndex >= int64(s.config.IndexAfterBytes) {
 		filepos := s.filePosition - int64(bytesWritten)
 
-		s.offsetIndex.IndexKey(log.GetOffset(), filepos)
-		s.timestampIndex.IndexKey(uint64(newTime.UnixNano()), int64(log.GetOffset()))
+		if err := s.offsetIndex.IndexKey(log.GetOffset(), filepos); err != nil {
+			return err
+		}
+		if err := s.timestampIndex.IndexKey(uint64(newTime.UnixNano()), int64(log.GetOffset())); err != nil {
+			return err
+		}
 
 		s.positionOfLastIndex = s.filePosition
 	}
@@ -300,7 +304,9 @@ func (s *fileLogSegment) Flush() error {
 }
 
 func (s *fileLogSegment) flush() error {
-	s.fileWriter.Flush()
+	if err := s.fileWriter.Flush(); err != nil {
+		return err
+	}
 
 	if err := s.file.Sync(); err != nil {
 		return err
@@ -345,8 +351,12 @@ func openSegment(logger *zap.SugaredLogger, config *pb.TopicConfig, basePath str
 	}
 
 	// If we've just created the file, ensure the file metadata is persisted to disk. This requires fsyncing the directory.
-	file.Sync()
-	parentDir.Sync()
+	if err := file.Sync(); err != nil {
+		return nil, err
+	}
+	if err := parentDir.Sync(); err != nil {
+		return nil, err
+	}
 
 	ctxLogger := logger.With(
 		"filename", filename,
@@ -465,7 +475,9 @@ func (s *fileLogSegment) openOrRebuildIndex(indexType string, keyFn func(*pb.Log
 
 func (s *fileLogSegment) rebuildIndex(store *kvStore, keyFn func(*pb.LogEntry) uint64, valueFn func(int64, *pb.LogEntry) int64) error {
 	// Rewind segment to start of file
-	s.file.Seek(0, io.SeekStart)
+	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
 
 	var lastIndexPosition int64
 
