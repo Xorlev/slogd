@@ -160,6 +160,18 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 	return nil
 }
 
+func (s *StructuredLogServer) ListTopics(ctx context.Context, req *pb.ListTopicsRequest) (*pb.ListTopicsResponse, error) {
+	resp := &pb.ListTopicsResponse{}
+
+	s.RLock()
+	for topic, _ := range s.topics {
+		resp.Topic = append(resp.Topic, Topic{name: topic})
+	}
+	s.RUnlock()
+
+	return resp, nil
+}
+
 func (s *StructuredLogServer) Close() error {
 	s.Lock()
 	defer s.Unlock()

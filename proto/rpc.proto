@@ -29,11 +29,11 @@ service StructuredLog {
         };
     };
 
-    // rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse) {
-    //     option (google.api.http) = {
-    //         get: '/topics'
-    //     };
-    // };
+    rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse) {
+        option (google.api.http) = {
+            get: '/topics'
+        };
+    };
     // rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse) {
     //     option (google.api.http) = {
     //         post: '/topics',

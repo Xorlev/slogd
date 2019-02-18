@@ -23,6 +23,11 @@ message LogEntry {
     }
 }
 
+message Topic {
+    // Name of the topic.
+    string name = 1;
+}
+
 message AppendRequest {
     string topic = 1;
     repeated LogEntry logs = 2;
@@ -62,7 +67,9 @@ message GetLogsResponse {
 }
 
 message ListTopicsRequest {}
-message ListTopicsResponse {}
+message ListTopicsResponse {
+    repeated Topic topic = 1;
+}
 
 message CreateTopicRequest {
     string topic = 1;
