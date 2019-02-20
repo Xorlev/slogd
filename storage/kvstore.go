@@ -211,7 +211,10 @@ func (kvs *kvStore) Delete() error {
 }
 
 func (kvs *kvStore) delete() error {
-	kvs.Flush()
+	if err := kvs.flush(); err != nil {
+		return err
+	}
+
 	if err := kvs.file.Close(); err != nil {
 		return err
 	}
