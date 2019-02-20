@@ -165,7 +165,7 @@ func (s *StructuredLogServer) ListTopics(ctx context.Context, req *pb.ListTopics
 
 	s.RLock()
 	for topic, _ := range s.topics {
-		resp.Topic = append(resp.Topic, Topic{name: topic})
+		resp.Topic = append(resp.Topic, &pb.Topic{Name: topic})
 	}
 	s.RUnlock()
 
