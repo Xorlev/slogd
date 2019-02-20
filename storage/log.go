@@ -27,6 +27,7 @@ type Log interface {
 	retrieve(context.Context, *LogQuery, *cursorPosition) (*LogRetrieval, error)
 	Append(context.Context, []*pb.LogEntry) ([]uint64, error)
 	Length() uint64
+	Cleanup() error
 	Close() error
 }
 
@@ -263,6 +264,20 @@ func (fl *FileLog) Length() uint64 {
 	return fl.nextOffset
 }
 
+// Runs cleanup (reaps old segments, rolls logs).
+func (fl *FileLog) Cleanup() error {
+	// Check if old segments need to be removed
+	if err := fl.reapSegments(); err != nil {
+		return errors.Wrapf(err, "Error reaping segments: %v", err)
+	}
+	// Check if the current log needs to be rolled (segment too old)
+	if err := fl.rollLogIfNecessary(); err != nil {
+		return errors.Wrapf(err, "Error rolling logs: %v", err)
+	}
+
+	return nil
+}
+
 // Close closes the log, closing the underlying segments and their files before
 // marking this log as closed. Periodic maintenance is halted and the
 // LogChannel is closed.
@@ -374,16 +389,7 @@ func (fl *FileLog) logMaintenance() {
 		select {
 		case <-ticker.C:
 			fl.logger.Info("Periodic maintenance starting.")
-
-			// Check if old segments need to be removed
-			if err := fl.reapSegments(); err != nil {
-				fl.logger.Errorf("Error reaping segments: %v", err)
-			}
-
-			// Check if the current log needs to be rolled (segment too old)
-			if err := fl.rollLogIfNecessary(); err != nil {
-				fl.logger.Errorf("Error rolling logs: %v", err)
-			}
+			fl.Cleanup()
 
 		case <-fl.closeCh:
 			fl.logger.Info("Stopping periodic maintenance.")
