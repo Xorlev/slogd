@@ -18,18 +18,7 @@ func TestLog_End2End(t *testing.T) {
 	defer os.Remove(tmpDir)
 
 	zap := logger()
-
-	log, err := storage.NewFileLog(zap, tmpDir, "end2end", &pb.TopicConfig{
-		MessageSizeLimit:          4 * 1024 * 1024,
-		SegmentSizeLimit:          4 * 1024, // force new segments every few messages
-		IndexAfterBytes:           256,
-		RotateSegmentAfterSeconds: 24 * 3600,
-		StaleSegmentSeconds:       720 * 3600,
-		LogMaintenancePeriod:      300,
-	})
-	if err != nil {
-		panic(err)
-	}
+	log := setupLog(zap, tmpDir)
 
 	go func(ch storage.LogEntryChannel) {
 		for {
@@ -44,7 +33,7 @@ func TestLog_End2End(t *testing.T) {
 	for i := uint64(0); i < 1000; i++ {
 		ctx := context.WithValue(context.Background(), "requestStart", time.Now())
 		offset, err := log.Append(ctx, []*pb.LogEntry{
-			&pb.LogEntry{
+			{
 				Entry: &pb.LogEntry_RawBytes{
 					RawBytes: []byte("helloworld"),
 				},
@@ -163,6 +152,52 @@ func TestLog_End2End(t *testing.T) {
 	}
 
 	log.Close()
+}
+
+func BenchmarkLogWrite(b *testing.B) {
+	tmpDir := tempdir()
+	defer os.Remove(tmpDir)
+
+	log := setupLog(zap.NewNop().Sugar(), tmpDir)
+
+	go func(ch storage.LogEntryChannel) {
+		for {
+			_, ok := <-ch
+			if !ok {
+				break
+			}
+		}
+	}(log.LogChannel())
+
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		ctx := context.WithValue(context.Background(), "requestStart", time.Now())
+		_, err := log.Append(ctx, []*pb.LogEntry{
+			{
+				Entry: &pb.LogEntry_RawBytes{
+					RawBytes: []byte("helloklsfasd;lfjsdlk;fjls;dkaworld"),
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+	}
+}
+
+func setupLog(logger *zap.SugaredLogger, tmpDir string) *storage.FileLog {
+	log, err := storage.NewFileLog(logger, tmpDir, "end2end", &pb.TopicConfig{
+		MessageSizeLimit:          4 * 1024 * 1024,
+		SegmentSizeLimit:          4 * 1024, // force new segments every few messages
+		IndexAfterBytes:           256,
+		RotateSegmentAfterSeconds: 24 * 3600,
+		StaleSegmentSeconds:       720 * 3600,
+		LogMaintenancePeriod:      300,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return log
 }
 
 func logger() *zap.SugaredLogger {
