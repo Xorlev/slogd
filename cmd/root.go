@@ -14,6 +14,6 @@ var RootCmd = &cobra.Command{
 	Short: "slogd is a lightweight structured logging daemon",
 	Long:  "slogd is a lightweight structured logging daemon exposed via HTTP and gRPC",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Do Stuff Here
+		_ = cmd.Help()
 	},
 }

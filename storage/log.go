@@ -358,7 +358,9 @@ func (fl *FileLog) reapSegments() error {
 			// If we only have one segment (or will have zero segments after reaping), roll the log first
 			if len(fl.segments) == 1 || index == len(fl.segments)-1 {
 				fl.logger.Debugf("Only have %d segments, want to remove %d. Rolling log.", len(fl.segments), index+1)
-				fl.rollLog()
+				if err := fl.rollLog(); err != nil {
+					return err
+				}
 			}
 
 			// If we still have one segment, it's empty. Nothing to do.

@@ -165,7 +165,8 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 		return retrieveError(errors.Wrap(err, "Failed to determine file position after scan"))
 	}
 
-	s.logger.Infof("Took %+v to scan segment (%d logs scanned, %d bytes read, %d bytes used).", time.Since(startedAt), scannedLogs, positionEnd-int64(positionStart), bytesRead)
+	s.logger.Infof("Took %+v to scan segment (%d logs scanned, %d bytes read, %d bytes used).",
+		time.Since(startedAt), scannedLogs, positionEnd-int64(positionStart), bytesRead)
 
 	return logEntries, scannedLogs, int64(positionStart + bytesRead), nil
 }
@@ -212,11 +213,9 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 	s.logger.Debugf("At position: %d pre-append()", s.filePosition)
 
 	bytesWritten, err := s.segmentWriter.WriteMsg(log)
-
 	if err != nil {
 		return errors.Wrap(err, "Error writing to segment.")
 	}
-
 	s.filePosition += int64(bytesWritten)
 
 	// Index if this is the first item or if it's been BYTES_BETWEEN_INDEX since the last index
@@ -382,7 +381,8 @@ func openSegment(logger *zap.SugaredLogger, config *pb.TopicConfig, basePath str
 			ctxLogger.Errorw("Log entry unexpected",
 				"logEntry_offset", logEntry.GetOffset(),
 			)
-			return nil, errors.New(fmt.Sprintf("Later log entry has lower offset than previous log entry: %d < %d", logEntry.GetOffset(), nextOffset))
+			return nil, errors.New(fmt.Sprintf("Later log entry has lower offset than previous log entry: %d < %d",
+				logEntry.GetOffset(), nextOffset))
 		}
 
 		logTimestamp, err := types.TimestampFromProto(logEntry.GetTimestamp())
