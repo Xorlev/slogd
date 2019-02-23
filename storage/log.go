@@ -407,7 +407,17 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 	}
 
 	configExists, err := exists(basePath + "/config.textproto")
-	if configExists {
+	if !configExists {
+		configFile, err := os.Create(basePath + "/" + "config.textproto")
+		if err != nil {
+			return nil, err
+		}
+
+		// Write default config
+		if err := proto.MarshalText(configFile, config); err != nil {
+			return nil, err
+		}
+	} else {
 		configText, err := ioutil.ReadFile(basePath + "/" + "config.textproto")
 		if err != nil {
 			return nil, err
@@ -417,9 +427,9 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 		if err != nil {
 			return nil, err
 		}
-		ctxLogger.Debugw("Config loaded", "config", config)
 	}
 
+	ctxLogger.Debugw("Config loaded", "config", config)
 
 	entries, err := ioutil.ReadDir(basePath)
 	if err != nil {
