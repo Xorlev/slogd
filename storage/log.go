@@ -449,7 +449,7 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 
 		segments = append(segments, fls)
 	} else {
-		for _, entry := range entries { // TODO TODO sort numerically!
+		for _, entry := range entries {
 			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
 				ctxLogger.Debugw("Opening segment",
 					"filename", entry.Name(),

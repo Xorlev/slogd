@@ -23,7 +23,7 @@ type StructuredLogServer struct {
 	topics      map[string]storage.Log
 	subscribers map[string]map[uint64]storage.LogEntryChannel
 
-	fanin storage.LogEntryChannel
+	fanin map[string]storage.LogEntryChannel
 }
 
 func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*pb.GetLogsResponse, error) {
@@ -192,20 +192,21 @@ func (s *StructuredLogServer) Close() error {
 // TODO: This seems silly, should be a single channel per topic.
 func (s *StructuredLogServer) startTopicWatcher(log storage.Log) {
 	s.logger.Debugf("Starting topic watcher: %s", log.Name())
+	s.fanin[log.Name()] = make(storage.LogEntryChannel)
 	go func(c storage.LogEntryChannel) {
 		for msg := range c {
 			s.logger.Debugf("Received message from topic channel: %s, %+v", log.Name(), msg)
-			s.fanin <- msg
+			s.fanin[log.Name()] <- msg
 		}
 	}(log.LogChannel())
 }
 
 // Reads fanin channel, identifies interested subscribers (StreamLogs clients)
 // and notifies them that new logs are available for consumptuon
-func (s *StructuredLogServer) pubsubListener() {
+func (s *StructuredLogServer) pubsubListener(topic string) {
 	s.logger.Info("Starting pubsub listener..")
 	for {
-		for log := range s.fanin {
+		for log := range s.fanin[topic] {
 			s.logger.Debugf("Received log: %+v", log)
 
 			s.RLock()
@@ -263,14 +264,13 @@ func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*StructuredLogSer
 		logger:      logger,
 		topics:      topics,
 		subscribers: make(map[string]map[uint64]storage.LogEntryChannel),
-		fanin:       make(storage.LogEntryChannel),
+		fanin:       make(map[string]storage.LogEntryChannel),
 	}
 
 	for _, log := range topics {
 		s.startTopicWatcher(log)
+		go s.pubsubListener(log.Name())
 	}
-
-	go s.pubsubListener()
 
 	return s, nil
 }
