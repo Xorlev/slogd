@@ -77,7 +77,7 @@ func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 
 	// Auto-create new topic
 	if !ok {
-		log, err := storage.NewFileLog(s.logger, s.config.DataDir, req.GetTopic(), storage.DefaultConfig())
+		log, err := storage.NewFileLog(s.logger, s.config.DataDir, req.GetTopic())
 
 		if err != nil {
 			s.Unlock()

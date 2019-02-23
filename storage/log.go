@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"github.com/gogo/protobuf/proto"
 	"io/ioutil"
 	"os"
 	"path"
@@ -10,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gogo/protobuf/types"
 	"github.com/pkg/errors"
 	"github.com/xorlev/slogd/internal"
 	pb "github.com/xorlev/slogd/proto"
@@ -416,7 +416,7 @@ func OpenLogs(logger *zap.SugaredLogger, directory string) (map[string]Log, erro
 			// todo validate topic name
 			topic := entry.Name()
 
-			logs[topic], err = NewFileLog(logger, directory, topic, DefaultConfig())
+			logs[topic], err = NewFileLog(logger, directory, topic)
 			if err != nil {
 				return nil, errors.Wrapf(err, "Error opening log: %s", topic)
 			}
@@ -450,23 +450,39 @@ func (nf byNumericalFilename) Less(i, j int) bool {
 	return a < b
 }
 
-func NewFileLog(logger *zap.SugaredLogger, directory string, topic string, config *pb.TopicConfig) (*FileLog, error) {
+func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*FileLog, error) {
 	basePath := path.Join(directory, topic)
+	config := DefaultConfig()
 
 	ctxLogger := logger.With(
 		"topic", topic,
 	)
 
-	exists, err := exists(basePath)
+	topicExists, err := exists(basePath)
 	if err != nil {
 		return nil, err
 	}
 
-	if !exists {
+	if !topicExists {
 		if err := os.Mkdir(basePath, 0755); err != nil {
 			return nil, err
 		}
 	}
+
+	configExists, err := exists(basePath + "/config.textproto")
+	if configExists {
+		configText, err := ioutil.ReadFile(basePath + "/" + "config.textproto")
+		if err != nil {
+			return nil, err
+		}
+
+		err = proto.UnmarshalText(string(configText), config)
+		if err != nil {
+			return nil, err
+		}
+		ctxLogger.Debugw("Config loaded", "config", config)
+	}
+
 
 	entries, err := ioutil.ReadDir(basePath)
 	if err != nil {
