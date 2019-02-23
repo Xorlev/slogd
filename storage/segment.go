@@ -55,7 +55,7 @@ type fileLogSegment struct {
 	endTime     *time.Time
 }
 
-func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
+func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
 	s.RLock()
 	defer s.RUnlock()
 
@@ -63,7 +63,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 		return retrieveError(errors.New("segment is closed"))
 	}
 
-	s.logger.Debugf("query = %+v", logFilter)
+	s.logger.Debugf("query = %+v", logQuery)
 
 	// Elide read, at end of segment
 	if filePosition == s.filePosition {
@@ -85,25 +85,25 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 	// TODO: if logfilter.startoffset = s.startoffset, filepos = 0
 	// logFilter.StartOffset != s.StartOffset()
 	if filePosition < 0 {
-		if !logFilter.Timestamp.IsZero() {
-			offset, err := s.timestampIndex.Find(uint64(logFilter.Timestamp.UnixNano()))
+		// Rewrite timestamp queries in terms of StartOffset.
+		if !logQuery.Timestamp.IsZero() {
+			offset, err := s.timestampIndex.Find(uint64(logQuery.Timestamp.UnixNano()))
 			if err != nil {
 				return retrieveError(errors.Wrap(err, "Failed to search index for start timestamp."))
 			}
 
-			positionStart, err = s.offsetIndex.Find(offset)
-			if err != nil {
-				return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
-			}
-		} else if logFilter.StartOffset > 0 {
-			// Seek to first position
-			positionStart, err = s.offsetIndex.Find(logFilter.StartOffset)
-			if err != nil {
-				return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
-			}
+			logQuery.StartOffset = offset
 		}
-	} else if logFilter.StartOffset != s.startOffset {
-		s.logger.Debugf("Skipping index lookup, %v", logFilter)
+
+		positionStart, err = s.offsetIndex.Find(logQuery.StartOffset)
+		if err != nil {
+			return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
+		}
+
+		s.logger.Infof("Took %+v to lookup index (%d logs scanned, %d bytes read, %d bytes used).",
+			time.Since(startedAt))
+	} else if logQuery.StartOffset != s.startOffset {
+		s.logger.Debugf("Skipping index lookup, %v", logQuery)
 		// We were provided an explicit position (continuations for cursors), seek there
 		positionStart = uint64(filePosition)
 	}
@@ -130,11 +130,10 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logFilter *LogQuery, file
 		if err == nil {
 			bytesRead += n
 			scannedLogs += 1
-			// s.logger.Debugf("Scanning entry: %+v", msg)
 
 			// Check that message is inside our offset boundary
 			if msg != nil {
-				passes, err := logFilter.LogPassesFilter(msg)
+				passes, err := logQuery.LogPassesFilter(msg)
 
 				// Failed to run filter, propagate
 				if err != nil {
@@ -362,7 +361,7 @@ func openSegment(logger *zap.SugaredLogger, config *pb.TopicConfig, basePath str
 		"filename", filename,
 	)
 
-	nextOffset := startOffset
+	maxOffset := startOffset
 	logEntry := &pb.LogEntry{}
 	reader := NewDelimitedReader(bufio.NewReader(file), int(config.MessageSizeLimit))
 	var startTime *time.Time = nil
@@ -377,12 +376,12 @@ func openSegment(logger *zap.SugaredLogger, config *pb.TopicConfig, basePath str
 			}
 		}
 
-		if logEntry.GetOffset() < nextOffset {
+		if logEntry.GetOffset() < maxOffset {
 			ctxLogger.Errorw("Log entry unexpected",
 				"logEntry_offset", logEntry.GetOffset(),
 			)
 			return nil, errors.New(fmt.Sprintf("Later log entry has lower offset than previous log entry: %d < %d",
-				logEntry.GetOffset(), nextOffset))
+				logEntry.GetOffset(), maxOffset))
 		}
 
 		logTimestamp, err := types.TimestampFromProto(logEntry.GetTimestamp())
@@ -398,7 +397,7 @@ func openSegment(logger *zap.SugaredLogger, config *pb.TopicConfig, basePath str
 			endTime = &logTimestamp
 		}
 
-		nextOffset = logEntry.GetOffset() + 1
+		maxOffset = logEntry.GetOffset()
 	}
 
 	if startTime == nil {
@@ -425,7 +424,7 @@ func openSegment(logger *zap.SugaredLogger, config *pb.TopicConfig, basePath str
 		segmentWriter: NewDelimitedWriter(fileWriter),
 
 		startOffset: startOffset,
-		endOffset:   nextOffset,
+		endOffset:   maxOffset,
 		startTime:   startTime,
 		endTime:     endTime,
 	}
