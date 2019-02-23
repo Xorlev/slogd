@@ -1,6 +1,7 @@
 package server
 
 import (
+	"google.golang.org/grpc/status"
 	"sync"
 	"sync/atomic"
 
@@ -8,7 +9,6 @@ import (
 	"github.com/xorlev/slogd/storage"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 )
 
@@ -39,7 +39,7 @@ func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 	if ok {
 		filter, err := storage.NewLogQuery(req)
 		if err != nil {
-			return nil, grpc.Errorf(codes.InvalidArgument, "Failed to create query: %+v", err)
+			return nil, status.Errorf(codes.InvalidArgument, "Failed to create query: %+v", err)
 		}
 
 		s.logger.Debugf("Filter = %+v", filter)
@@ -50,20 +50,20 @@ func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 				"req", req,
 				"err", err,
 			)
-			return nil, grpc.Errorf(codes.Internal, "Error retrieving logs: %v", err)
+			return nil, status.Errorf(codes.Internal, "Error retrieving logs: %v", err)
 		}
 
 		resp.Logs = logRetrieval.Logs
 
 		return resp, nil
 	} else {
-		return nil, grpc.Errorf(codes.InvalidArgument, "Topic does not exist: %v", req.GetTopic())
+		return nil, status.Errorf(codes.NotFound, "Topic does not exist: %v", req.GetTopic())
 	}
 }
 
 func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequest) (*pb.AppendResponse, error) {
 	if !isValidTopic(req.GetTopic()) {
-		return nil, grpc.Errorf(codes.InvalidArgument, "Topic must conform to pattern [a-z0-9_\\-.]+")
+		return nil, status.Errorf(codes.InvalidArgument, "Topic must conform to pattern [a-z0-9_\\-.]+")
 	}
 
 	resp := &pb.AppendResponse{}
@@ -81,7 +81,7 @@ func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 
 		if err != nil {
 			s.Unlock()
-			return nil, grpc.Errorf(codes.Internal, "Error creating new topic: %v", err)
+			return nil, status.Errorf(codes.Internal, "Error creating new topic: %v", err)
 		}
 
 		s.startTopicWatcher(log)
@@ -92,7 +92,7 @@ func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 
 	offsets, err := topic.Append(ctx, req.GetLogs())
 	if err != nil {
-		return nil, grpc.Errorf(codes.Internal, "Error appending logs: %v", err)
+		return nil, status.Errorf(codes.Internal, "Error appending logs: %v", err)
 	}
 
 	s.logger.Debug("Post-append")
@@ -118,7 +118,7 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 
 		filter, err := storage.NewLogQuery(req)
 		if err != nil {
-			return grpc.Errorf(codes.InvalidArgument, "Failed to create query: %+v", err)
+			return status.Errorf(codes.InvalidArgument, "Failed to create query: %+v", err)
 		}
 
 		s.logger.Debugf("Filter = %+v", filter)
@@ -153,7 +153,7 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 
 		}
 	} else {
-		return grpc.Errorf(codes.InvalidArgument, "Topic does not exist: %v", req.GetTopic())
+		return status.Errorf(codes.InvalidArgument, "Topic does not exist: %v", req.GetTopic())
 	}
 
 	return nil
