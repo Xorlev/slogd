@@ -497,8 +497,8 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 func DefaultConfig() *pb.TopicConfig {
 	return &pb.TopicConfig{
 		MessageSizeLimit:          4 * 1024 * 1024,
-		SegmentSizeLimit:          1 * 1024 * 1024,
-		IndexAfterBytes:           4096,
+		SegmentSizeLimit:          16 * 1024 * 1024,
+		IndexAfterBytes:           4 * 1024,
 		RotateSegmentAfterSeconds: 24 * 3600,
 		StaleSegmentSeconds:       720 * 3600,
 		LogMaintenancePeriod:      300,
