@@ -44,7 +44,7 @@ func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsReques
 
 		s.logger.Debugf("Filter = %+v", filter)
 
-		logRetrieval, err := topic.Retrieve(ctx, filter, nil)
+		logRetrieval, err := topic.Retrieve(ctx, filter)
 		if err != nil {
 			s.logger.Errorw("Failed to retrieve logs",
 				"req", req,
@@ -114,7 +114,6 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 	s.RUnlock()
 
 	if ok {
-
 		ch := s.addSubscriber(req, clientID)
 
 		filter, err := storage.NewLogQuery(req)
@@ -190,6 +189,7 @@ func (s *StructuredLogServer) Close() error {
 }
 
 // Publishes messages from all topic channels to single channel
+// TODO: This seems silly, should be a single channel per topic.
 func (s *StructuredLogServer) startTopicWatcher(log storage.Log) {
 	s.logger.Debugf("Starting topic watcher: %s", log.Name())
 	go func(c storage.LogEntryChannel) {
