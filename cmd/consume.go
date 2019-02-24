@@ -2,11 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/gogo/protobuf/proto"
+	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/types"
 	"github.com/spf13/cobra"
 	pb "github.com/xorlev/slogd/proto"
-	context "golang.org/x/net/context"
+	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"io"
 	"os"
@@ -18,7 +18,7 @@ var (
 	startTimestamp string
 )
 
-// produceCmd represents the produce command
+// consumeCmd represents the produce command
 var consumeCmd = &cobra.Command{
 	Use:   "consume",
 	Short: "consumes messages from slogd, exports as textproto/proto/JSON to stdout",
@@ -76,6 +76,7 @@ var consumeCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		m := jsonpb.Marshaler{}
 		for {
 			log, err := slc.Recv()
 			if err == io.EOF {
@@ -86,10 +87,10 @@ var consumeCmd = &cobra.Command{
 				os.Exit(1)
 			}
 
-			log.GetLogs()
-
-			b, _ := proto.Marshal(log)
-			os.Stdout.Write(b)
+			for _, log := range log.GetLogs() {
+				_ = m.Marshal(os.Stdout, log)
+				_, _ = os.Stdout.WriteString("\n")
+			}
 		}
 	},
 }
