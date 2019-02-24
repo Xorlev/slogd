@@ -436,11 +436,16 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 		return nil, err
 	}
 
-	sort.Sort(byNumericalFilename(entries))
+	var segmentFiles []os.FileInfo
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
+			segmentFiles = append(segmentFiles, entry)
+		}
+	}
+	sort.Sort(byNumericalFilename(segmentFiles))
 
 	segments := make([]logSegment, 0)
-
-	if len(entries) == 0 {
+	if len(segmentFiles) == 0 {
 		// for each segment...
 		fls, err := openSegment(logger, config, basePath, 0)
 		if err != nil {
@@ -449,34 +454,32 @@ func NewFileLog(logger *zap.SugaredLogger, directory string, topic string) (*Fil
 
 		segments = append(segments, fls)
 	} else {
-		for _, entry := range entries {
-			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
-				ctxLogger.Debugw("Opening segment",
-					"filename", entry.Name(),
-				)
-				startOffset, err := strconv.ParseUint(strings.TrimSuffix(entry.Name(), ".log"), 10, 64)
-				if err != nil {
-					return nil, errors.Wrap(err, "Error parsing log filename")
-				}
-
-				fls, err := openSegment(ctxLogger, config, basePath, startOffset)
-				if err != nil {
-					return nil, errors.Wrapf(err, "Error opening segment: %s/%d.log", basePath, startOffset)
-				}
-
-				ctxLogger.Debugw("Opened segment",
-					"filename", entry.Name(),
-					"startOffset", fls.StartOffset(),
-					"endOffset", fls.EndOffset())
-
-				segments = append(segments, fls)
+		for _, entry := range segmentFiles {
+			ctxLogger.Debugw("Opening segment",
+				"filename", entry.Name(),
+			)
+			startOffset, err := strconv.ParseUint(strings.TrimSuffix(entry.Name(), ".log"), 10, 64)
+			if err != nil {
+				return nil, errors.Wrap(err, "Error parsing log filename")
 			}
+
+			fls, err := openSegment(ctxLogger, config, basePath, startOffset)
+			if err != nil {
+				return nil, errors.Wrapf(err, "Error opening segment: %s/%d.log", basePath, startOffset)
+			}
+
+			ctxLogger.Debugw("Opened segment",
+				"filename", entry.Name(),
+				"startOffset", fls.StartOffset(),
+				"endOffset", fls.EndOffset())
+
+			segments = append(segments, fls)
 		}
 	}
 
 	lastSegment := segments[len(segments)-1]
 	nextOffset := lastSegment.EndOffset() + 1
-	if len(entries) == 0 {
+	if len(segmentFiles) == 0 {
 		nextOffset = 0
 	}
 

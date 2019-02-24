@@ -36,18 +36,18 @@ type fileLogSegment struct {
 	config *pb.TopicConfig
 	logger *zap.SugaredLogger
 
-	basePath     string
-	closed       bool
-	file         *os.File
-	filename     string
-	filePosition int64 // TODO: ensure reads never go beyond filePosition
-	fileWriter   *bufio.Writer
+	basePath          string
+	closed            bool
+	file              *os.File
+	filename          string
+	endOfFilePosition int64 // TODO: ensure reads never go beyond endOfFilePosition
+	fileWriter        *bufio.Writer
+	protoFileWriter   WriteCloser
 
 	offsetIndex    *kvStore
 	timestampIndex *kvStore
+	lastIndexPosition int64
 
-	segmentWriter       WriteCloser
-	positionOfLastIndex int64
 
 	startOffset uint64
 	endOffset   uint64
@@ -55,25 +55,25 @@ type fileLogSegment struct {
 	endTime     *time.Time
 }
 
-func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, filePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
+func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, continuationFilePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
 	s.RLock()
-	defer s.RUnlock()
-
 	if s.closed {
+		s.RUnlock()
 		return retrieveError(errors.New("segment is closed"))
 	}
 
 	s.logger.Debugf("query = %+v", logQuery)
 
 	// Elide read, at end of segment
-	if filePosition == s.filePosition {
-		return []*pb.LogEntry{}, 0, s.filePosition, nil
+	if continuationFilePosition == s.endOfFilePosition {
+		s.RUnlock()
+		return []*pb.LogEntry{}, 0, s.endOfFilePosition, nil
 	}
+	s.RUnlock()
 
 	startedAt := time.Now()
 
 	// Open new file handle for seeking
-	// TODO(xorlev): can these be safely pooled?
 	file, err := os.OpenFile(s.filename, os.O_RDONLY, 0666)
 	if err != nil {
 		return retrieveError(errors.Wrap(err, "Failed to open segment file."))
@@ -84,7 +84,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, fileP
 
 	// TODO: if logfilter.startoffset = s.startoffset, filepos = 0
 	// logFilter.StartOffset != s.StartOffset()
-	if filePosition < 0 {
+	if continuationFilePosition < 0 {
 		// Rewrite timestamp queries in terms of StartOffset.
 		if !logQuery.Timestamp.IsZero() {
 			offset, err := s.timestampIndex.Find(uint64(logQuery.Timestamp.UnixNano()))
@@ -95,17 +95,19 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, fileP
 			logQuery.StartOffset = offset
 		}
 
-		positionStart, err = s.offsetIndex.Find(logQuery.StartOffset)
-		if err != nil {
-			return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
+		// Skip the index lookup if the query's start offset is the start of the segment.
+		if logQuery.StartOffset != s.startOffset {
+			positionStart, err = s.offsetIndex.Find(logQuery.StartOffset)
+			if err != nil {
+				return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
+			}
+			s.logger.Infof("Took %+v to lookup index (%d logs scanned, %d bytes read, %d bytes used).",
+				time.Since(startedAt))
 		}
-
-		s.logger.Infof("Took %+v to lookup index (%d logs scanned, %d bytes read, %d bytes used).",
-			time.Since(startedAt))
 	} else if logQuery.StartOffset != s.startOffset {
 		s.logger.Debugf("Skipping index lookup, %v", logQuery)
 		// We were provided an explicit position (continuations for cursors), seek there
-		positionStart = uint64(filePosition)
+		positionStart = uint64(continuationFilePosition)
 	}
 
 	s.logger.Debugf("Seeking to position %v", positionStart)
@@ -208,18 +210,18 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 		s.endTime = &newTime
 	}
 
-	before := s.filePosition
-	s.logger.Debugf("At position: %d pre-append()", s.filePosition)
+	before := s.endOfFilePosition
+	s.logger.Debugf("At position: %d pre-append()", s.endOfFilePosition)
 
-	bytesWritten, err := s.segmentWriter.WriteMsg(log)
+	bytesWritten, err := s.protoFileWriter.WriteMsg(log)
 	if err != nil {
 		return errors.Wrap(err, "Error writing to segment.")
 	}
-	s.filePosition += int64(bytesWritten)
+	s.endOfFilePosition += int64(bytesWritten)
 
 	// Index if this is the first item or if it's been BYTES_BETWEEN_INDEX since the last index
-	if s.positionOfLastIndex == 0 || s.filePosition-s.positionOfLastIndex >= int64(s.config.IndexAfterBytes) {
-		filepos := s.filePosition - int64(bytesWritten)
+	if s.lastIndexPosition == 0 || s.endOfFilePosition-s.lastIndexPosition >= int64(s.config.IndexAfterBytes) {
+		filepos := s.endOfFilePosition - int64(bytesWritten)
 
 		if err := s.offsetIndex.IndexKey(log.GetOffset(), filepos); err != nil {
 			return err
@@ -228,10 +230,10 @@ func (s *fileLogSegment) Append(ctx context.Context, log *pb.LogEntry) error {
 			return err
 		}
 
-		s.positionOfLastIndex = s.filePosition
+		s.lastIndexPosition = s.endOfFilePosition
 	}
 
-	s.logger.Debugf("Appended: %+v, wrote %d bytes.", log, s.filePosition-before)
+	s.logger.Debugf("Appended: %+v, wrote %d bytes.", log, s.endOfFilePosition-before)
 
 	return nil
 }
@@ -268,7 +270,7 @@ func (s *fileLogSegment) SizeBytes() uint64 {
 	s.RLock()
 	defer s.RUnlock()
 
-	return uint64(s.filePosition)
+	return uint64(s.endOfFilePosition)
 }
 
 func (s *fileLogSegment) Delete() error {
@@ -414,14 +416,14 @@ func openSegment(logger *zap.SugaredLogger, config *pb.TopicConfig, basePath str
 	fileWriter := bufio.NewWriter(file)
 
 	fls := &fileLogSegment{
-		config:        config,
-		logger:        ctxLogger,
-		basePath:      basePath,
-		file:          file,
-		filename:      filename,
-		fileWriter:    fileWriter,
-		filePosition:  endOfFile,
-		segmentWriter: NewDelimitedWriter(fileWriter),
+		config:            config,
+		logger:            ctxLogger,
+		basePath:          basePath,
+		file:              file,
+		filename:          filename,
+		fileWriter:        fileWriter,
+		endOfFilePosition: endOfFile,
+		protoFileWriter:   NewDelimitedWriter(fileWriter),
 
 		startOffset: startOffset,
 		endOffset:   maxOffset,

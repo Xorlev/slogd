@@ -1,4 +1,4 @@
-package storage_test
+package storage
 
 import (
 	"io/ioutil"
@@ -8,7 +8,6 @@ import (
 
 	"github.com/xorlev/slogd/internal"
 	pb "github.com/xorlev/slogd/proto"
-	"github.com/xorlev/slogd/storage"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
 )
@@ -20,7 +19,7 @@ func TestLog_End2End(t *testing.T) {
 	zap := logger()
 	log := setupLog(zap, tmpDir)
 
-	go func(ch storage.LogEntryChannel) {
+	go func(ch LogEntryChannel) {
 		for {
 			_, ok := <-ch
 			if !ok {
@@ -55,7 +54,7 @@ func TestLog_End2End(t *testing.T) {
 
 	// Consume them again one at a time
 	for i := uint64(0); i < 1000; i++ {
-		q := &storage.LogQuery{
+		q := &LogQuery{
 			StartOffset: i,
 			MaxMessages: 1,
 		}
@@ -76,7 +75,7 @@ func TestLog_End2End(t *testing.T) {
 
 	// Consume them all at once
 	{
-		q := &storage.LogQuery{
+		q := &LogQuery{
 			StartOffset: 0,
 			MaxMessages: 1000,
 		}
@@ -101,19 +100,19 @@ func TestLog_End2End(t *testing.T) {
 	{
 		logsPerBatch := uint32(50)
 
-		q := &storage.LogQuery{
+		q := &LogQuery{
 			StartOffset: 0,
 			MaxMessages: logsPerBatch,
 		}
 
-		ch := make(storage.LogEntryChannel, 1)
+		ch := make(LogEntryChannel, 1)
 
 		// log.Retrieve(context.Background(), q, continuation)
-		cursor := storage.NewCursor(context.Background(), q, ch, logsPerBatch)
+		cursor := NewCursor(context.Background(), q, ch, logsPerBatch)
 
 		zap.Sync()
 
-		consumed := make(storage.LogEntryChannel, 1000)
+		consumed := make(LogEntryChannel, 1000)
 		err := cursor.Consume(log, func(resp interface{}) error {
 			response := resp.(*pb.GetLogsResponse)
 
@@ -160,7 +159,7 @@ func BenchmarkLogWrite(b *testing.B) {
 
 	log := setupLog(zap.NewNop().Sugar(), tmpDir)
 
-	go func(ch storage.LogEntryChannel) {
+	go func(ch LogEntryChannel) {
 		for {
 			_, ok := <-ch
 			if !ok {
@@ -185,15 +184,16 @@ func BenchmarkLogWrite(b *testing.B) {
 	}
 }
 
-func setupLog(logger *zap.SugaredLogger, tmpDir string) *storage.FileLog {
-	log, err := storage.NewFileLog(logger, tmpDir, "end2end", &pb.TopicConfig{
+func setupLog(logger *zap.SugaredLogger, tmpDir string) *FileLog {
+	log, err := NewFileLog(logger, tmpDir, "end2end")
+	log.config = &pb.TopicConfig{
 		MessageSizeLimit:          4 * 1024 * 1024,
 		SegmentSizeLimit:          4 * 1024, // force new segments every few messages
 		IndexAfterBytes:           256,
 		RotateSegmentAfterSeconds: 24 * 3600,
 		StaleSegmentSeconds:       720 * 3600,
 		LogMaintenancePeriod:      300,
-	})
+	}
 	if err != nil {
 		panic(err)
 	}

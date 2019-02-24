@@ -27,7 +27,7 @@ type kvStore struct {
 	logger       *zap.SugaredLogger
 	file         *os.File
 	filename     string
-	filePosition int64 // TODO: ensure reads never go beyond filePosition
+	filePosition int64 // TODO: ensure reads never go beyond endOfFilePosition
 	startKey     uint64
 	endKey       uint64
 
