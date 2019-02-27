@@ -18,6 +18,7 @@ type LogQuery struct {
 func NewLogQuery(req *proto.GetLogsRequest) (*LogQuery, error) {
 	filter := &LogQuery{
 		MaxMessages: uint32(req.GetMaxMessages()),
+		Position: EXACT,
 	}
 
 	switch req.StartAt.(type) {

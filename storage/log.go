@@ -55,7 +55,8 @@ type cursorPosition struct {
 type position int
 
 const (
-	LATEST position = iota
+	EXACT position = iota
+	LATEST
 	EARLIEST
 )
 
@@ -80,12 +81,23 @@ func (fl *FileLog) retrieve(ctx context.Context, query *LogQuery, continuation *
 	copy(segments, fl.segments)
 	fl.RUnlock()
 
+	if continuation == nil || continuation.FilePosition == -1 {
+		if query.Position == LATEST && query.MaxMessages > 0 {
+			startOffset := uint64(max(0, int64(fl.Length())-int64(query.MaxMessages)))
+			fl.logger.Debugf("Rewriting query %v+ with new StartOffset %d", query, startOffset)
+			query.StartOffset = startOffset
+		}
+	}
+
 	// TODO: race between logfile reaper and segment retrieval
 	// Find the covering set of segments with messages that fit our LogFilter, then ask for messages up to
 	// the number of messages requested. May span multiple segments.
 	var lastOffset uint64 = 0
 	var positionEnd int64 = -1
 	var lastSegment int = -1
+
+	// Copy the query as we'll mutate it below.
+	newQuery := query
 	for i, segment := range segments {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -95,19 +107,21 @@ func (fl *FileLog) retrieve(ctx context.Context, query *LogQuery, continuation *
 
 		// TODO: add EndTimestamp?
 		// Evaluate LogFilter against segment
-		segmentMatches, err := query.SegmentPassesFilter(segment)
+		segmentMatches, err := newQuery.SegmentPassesFilter(segment)
 		// fl.logger.Debugf("Segment matches filter: %+v, %+v", lf, segment)
 		if err != nil {
 			return nil, err
 		}
 
-		if segmentMatches && messagesRead < query.MaxMessages {
+		if segmentMatches && messagesRead < newQuery.MaxMessages {
 			var filePosition int64 = -1
 			if continuation != nil {
 				filePosition = continuation.FilePosition
 			}
 
-			segmentLogs, scanned, segmentPositionEnd, err := segment.Retrieve(ctx, query, filePosition, query.MaxMessages-messagesRead)
+			messagesLeftToFillRequest := newQuery.MaxMessages - messagesRead
+			segmentLogs, scanned, segmentPositionEnd, err :=
+				segment.Retrieve(ctx, newQuery, filePosition, messagesLeftToFillRequest)
 			if err != nil {
 				return nil, errors.Wrap(err, "Error reading from segment")
 			}
@@ -118,7 +132,7 @@ func (fl *FileLog) retrieve(ctx context.Context, query *LogQuery, continuation *
 				lastOffset = segmentLogs[len(segmentLogs)-1].Offset
 
 				// TODO clone
-				query.StartOffset = lastOffset + 1
+				newQuery.StartOffset = lastOffset + 1
 			}
 
 			scannedLogs += scanned

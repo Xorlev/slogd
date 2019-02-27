@@ -150,6 +150,60 @@ func TestLog_End2End(t *testing.T) {
 		close(ch)
 	}
 
+	// Consume the latest 50 at a time via cursor
+	{
+		logsPerBatch := uint32(50)
+
+		q := &LogQuery{
+			MaxMessages: logsPerBatch,
+			Position: LATEST,
+		}
+
+		ch := make(LogEntryChannel, 1)
+
+		// log.Retrieve(context.Background(), q, continuation)
+		cursor := NewCursor(context.Background(), q, ch, logsPerBatch)
+
+		zap.Sync()
+
+		consumed := make(LogEntryChannel, 1000)
+		err := cursor.Consume(log, func(resp interface{}) error {
+			response := resp.(*pb.GetLogsResponse)
+
+			zap.Sync()
+
+			if len(response.Logs) != 1 {
+				t.Fatalf("Expected 1 log, had: %d", len(response.Logs))
+			}
+
+			for _, l := range response.Logs {
+				consumed <- &internal.TopicAndLog{
+					LogEntry: l,
+					Topic:    "end2end",
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			panic(err)
+		}
+
+		i := uint64(950)
+		for entry := range consumed {
+			if entry.LogEntry.Offset != i {
+				t.Fatalf("Expected offset %d, found %+v", i, entry)
+			}
+			i += 1
+
+			if i == 1000 {
+				break
+			}
+		}
+
+		close(consumed)
+		close(ch)
+	}
+
 	log.Close()
 }
 
