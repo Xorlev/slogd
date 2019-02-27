@@ -25,6 +25,10 @@ type StructuredLogServer struct {
 }
 
 func (s *StructuredLogServer) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*pb.GetLogsResponse, error) {
+	if !isValidTopic(req.GetTopic()) {
+		return nil, status.Errorf(codes.InvalidArgument, "Topic must conform to pattern [a-z0-9_\\-.]+")
+	}
+
 	resp := &pb.GetLogsResponse{}
 	s.logger.Debugw("Processing GetLogs call",
 		"request", req,
@@ -101,6 +105,10 @@ func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 }
 
 func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.StructuredLog_StreamLogsServer) error {
+	if !isValidTopic(req.GetTopic()) {
+		return status.Errorf(codes.InvalidArgument, "Topic must conform to pattern [a-z0-9_\\-.]+")
+	}
+
 	clientID := atomic.AddUint64(&s.clientID, 1)
 
 	s.logger.Debugw("Processing StreamLogs call",
