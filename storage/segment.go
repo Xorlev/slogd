@@ -73,17 +73,9 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, conti
 
 	startedAt := time.Now()
 
-	// Open new file handle for seeking
-	file, err := os.OpenFile(s.filename, os.O_RDONLY, 0666)
-	if err != nil {
-		return retrieveError(errors.Wrap(err, "Failed to open segment file."))
-	}
-
 	// Determine where to start in the file
-	var positionStart uint64 = 0
+	var positionStart int64 = 0
 
-	// TODO: if logfilter.startoffset = s.startoffset, filepos = 0
-	// logFilter.StartOffset != s.StartOffset()
 	if continuationFilePosition < 0 {
 		// Rewrite timestamp queries in terms of StartOffset.
 		if !logQuery.Timestamp.IsZero() {
@@ -97,28 +89,25 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, conti
 
 		// Skip the index lookup if the query's start offset is the start of the segment.
 		if logQuery.StartOffset != s.startOffset {
-			positionStart, err = s.offsetIndex.Find(logQuery.StartOffset)
+			p, err := s.offsetIndex.Find(logQuery.StartOffset)
 			if err != nil {
 				return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
 			}
+			positionStart = int64(p)
 			s.logger.Infof("Took %+v to lookup index (%d logs scanned, %d bytes read, %d bytes used).",
 				time.Since(startedAt))
 		}
 	} else if logQuery.StartOffset != s.startOffset {
 		s.logger.Debugf("Skipping index lookup, %v", logQuery)
 		// We were provided an explicit position (continuations for cursors), seek there
-		positionStart = uint64(continuationFilePosition)
-	}
-
-	s.logger.Debugf("Seeking to position %v", positionStart)
-	if _, err := file.Seek(int64(positionStart), io.SeekStart); err != nil {
-		return retrieveError(errors.Wrap(err, "Failed to seek to position."))
+		positionStart = continuationFilePosition
 	}
 
 	// Read and collect messages from log
-	reader := NewDelimitedReader(bufio.NewReader(file), int(s.config.MessageSizeLimit))
+	r := io.NewSectionReader(s.file, positionStart, s.endOfFilePosition - positionStart)
+	reader := NewDelimitedReader(bufio.NewReader(r), int(s.config.MessageSizeLimit))
 	logEntries := make([]*pb.LogEntry, 0)
-	var bytesRead uint64 = 0
+	var bytesRead int64 = 0
 	scannedLogs := 0
 	for {
 		// Abort early if we can
@@ -130,7 +119,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, conti
 		n, err := reader.ReadMsg(msg)
 
 		if err == nil {
-			bytesRead += n
+			bytesRead += int64(n)
 			scannedLogs += 1
 
 			// Check that message is inside our offset boundary
@@ -161,15 +150,11 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, conti
 		}
 	}
 
-	positionEnd, err := file.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return retrieveError(errors.Wrap(err, "Failed to determine file position after scan"))
-	}
-
+	positionEnd := positionStart + bytesRead
 	s.logger.Infof("Took %+v to scan segment (%d logs scanned, %d bytes read, %d bytes used).",
-		time.Since(startedAt), scannedLogs, positionEnd-int64(positionStart), bytesRead)
+		time.Since(startedAt), scannedLogs, bytesRead, bytesRead)
 
-	return logEntries, scannedLogs, int64(positionStart + bytesRead), nil
+	return logEntries, scannedLogs, positionEnd, nil
 }
 
 func retrieveError(err error) ([]*pb.LogEntry, int, int64, error) {
