@@ -5,8 +5,7 @@ as a first-class citizen.
 
 slogd aims to be a Kafka-like tool for the enthusiast developer, without the investment of
 running Zookeeper and Kafka on a single node. While the JVM can be tuned for lower resources,
-it will always be handily beat by a well-written Go program. slogd runs in approximately 14kb
-of memory.
+it will generally be beat by a well-written Go program. slogd runs in ~9MB of memory.
 
 There are a lot of message daemons out there. There's servers that accept logs. But everything 
 is very heavy for the enthusiast developer working on small projects.
