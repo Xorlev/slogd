@@ -37,6 +37,7 @@ type kvStore struct {
 func (kvs *kvStore) Find(targetKey uint64) (uint64, error) {
 	buffer := make([]byte, indexSize)
 	file, err := os.OpenFile(kvs.filename, os.O_CREATE|os.O_RDWR|os.O_SYNC, 0666)
+	defer file.Close()
 	if err != nil {
 		return 0, err
 	}
