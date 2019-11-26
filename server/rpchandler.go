@@ -104,6 +104,58 @@ func (s *StructuredLogServer) AppendLogs(ctx context.Context, req *pb.AppendRequ
 	return resp, nil
 }
 
+func (s *StructuredLogServer) GetLogsStream(req *pb.GetLogsRequest, stream pb.StructuredLog_GetLogsStreamServer) error {
+	if !isValidTopic(req.GetTopic()) {
+		return status.Errorf(codes.InvalidArgument, "Topic must conform to pattern [a-z0-9_\\-.]+")
+	}
+
+	clientID := atomic.AddUint64(&s.clientID, 1)
+
+	s.logger.Debugw("Processing StreamLogs call",
+		"request", req,
+	)
+
+	s.RLock()
+	topic, ok := s.topics[req.GetTopic()]
+	s.RUnlock()
+
+	if ok {
+		ch := s.addSubscriber(req, clientID)
+
+		filter, err := storage.NewLogQuery(req)
+		if err != nil {
+			return status.Errorf(codes.InvalidArgument, "Failed to create query: %+v", err)
+		}
+
+		s.logger.Debugf("Filter = %+v", filter)
+
+		c := storage.NewCursor(stream.Context(), filter, ch, 1000)
+
+		if err := c.Consume(topic, func(log *pb.LogEntry) error { return stream.SendMsg(log) }); err != nil {
+			return err
+		}
+		for {
+			select {
+			case <-stream.Context().Done():
+				s.logger.Infow("Stream finished.",
+					"clientID", clientID,
+				)
+
+				s.removeSubscriber(req, clientID)
+
+				// Done, remove
+				return nil
+			case <-ch:
+				if err := c.Consume(topic, func(log *pb.LogEntry) error { return stream.SendMsg(log) }); err != nil {
+					return err
+				}
+			}
+		}
+	} else {
+		return status.Errorf(codes.InvalidArgument, "Topic does not exist: %v", req.GetTopic())
+	}
+}
+
 func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.StructuredLog_StreamLogsServer) error {
 	if !isValidTopic(req.GetTopic()) {
 		return status.Errorf(codes.InvalidArgument, "Topic must conform to pattern [a-z0-9_\\-.]+")
@@ -131,7 +183,9 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 
 		c := storage.NewCursor(stream.Context(), filter, ch, 1000)
 
-		if err := c.Consume(topic, stream.SendMsg); err != nil {
+		if err := c.Consume(topic, func(log *pb.LogEntry) error {
+			return stream.SendMsg(logToResponse(log))
+		}); err != nil {
 			return err
 		}
 		for {
@@ -146,23 +200,16 @@ func (s *StructuredLogServer) StreamLogs(req *pb.GetLogsRequest, stream pb.Struc
 				// Done, remove
 				return nil
 			case <-ch:
-				if err := c.Consume(topic, stream.SendMsg); err != nil {
+				if err := c.Consume(topic, func(log *pb.LogEntry) error {
+					return stream.SendMsg(logToResponse(log))
+				}); err != nil {
 					return err
 				}
 			}
 		}
-
-		select {
-		case <-ch:
-			// ignore, we're just clearing the channel if it has a value
-		default:
-
-		}
 	} else {
 		return status.Errorf(codes.InvalidArgument, "Topic does not exist: %v", req.GetTopic())
 	}
-
-	return nil
 }
 
 func (s *StructuredLogServer) ListTopics(ctx context.Context, req *pb.ListTopicsRequest) (*pb.ListTopicsResponse, error) {
@@ -240,6 +287,13 @@ func (s *StructuredLogServer) removeSubscriber(req *pb.GetLogsRequest, clientID 
 	defer s.Unlock()
 	close(s.subscribers[req.GetTopic()][clientID])
 	delete(s.subscribers[req.GetTopic()], clientID)
+}
+
+// Convert a single log entry to a full GetLogsResponse
+func logToResponse(log *pb.LogEntry) *pb.GetLogsResponse {
+	return &pb.GetLogsResponse{
+		Logs: []*pb.LogEntry{log},
+	}
 }
 
 func NewRpcHandler(logger *zap.SugaredLogger, config *Config) (*StructuredLogServer, error) {

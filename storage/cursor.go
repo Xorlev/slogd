@@ -1,6 +1,7 @@
 package storage
 
 import (
+	pb "github.com/xorlev/slogd/proto"
 	"golang.org/x/net/context"
 )
 
@@ -19,7 +20,7 @@ type Cursor struct {
 // the provided LogQuery. Upon finding the end of the log (or an error),
 // Consume will return nil or the error. The caller must call Consume again to
 // retrieve logs since the last invocation returned.
-func (c *Cursor) Consume(topic Log, f func(interface{}) error) error {
+func (c *Cursor) Consume(topic Log, f func(entry *pb.LogEntry) error) error {
 	// Page through log until no more messages show up, then return control to caller
 	for {
 		var logQuery *LogQuery
@@ -41,7 +42,7 @@ func (c *Cursor) Consume(topic Log, f func(interface{}) error) error {
 		lastOffset := c.position.LastOffsetRead
 		for _, log := range read.Logs {
 			lastOffset = log.GetOffset()
-			if err := f(logToResponse(log)); err != nil {
+			if err := f(log); err != nil {
 				return err
 			}
 		}

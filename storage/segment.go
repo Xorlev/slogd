@@ -55,6 +55,7 @@ type fileLogSegment struct {
 	endTime     *time.Time
 }
 
+// Retrieves logs from the segment.
 func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, continuationFilePosition int64, maxMessages uint32) ([]*pb.LogEntry, int, int64, error) {
 	s.RLock()
 	if s.closed {
@@ -94,7 +95,7 @@ func (s *fileLogSegment) Retrieve(ctx context.Context, logQuery *LogQuery, conti
 				return retrieveError(errors.Wrap(err, "Failed to search index for start offset."))
 			}
 			positionStart = int64(p)
-			s.logger.Infof("Took %+v to lookup index (%d logs scanned, %d bytes read, %d bytes used).",
+			s.logger.Infof("Took %+v to lookup index.",
 				time.Since(startedAt))
 		}
 	} else if logQuery.StartOffset != s.startOffset {

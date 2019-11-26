@@ -70,7 +70,7 @@ var consumeCmd = &cobra.Command{
 			}
 		}
 
-		slc, err := client.StreamLogs(ctx, req)
+		slc, err := client.GetLogsStream(ctx, req)
 		if err != nil {
 			fmt.Printf("Failed to stream logs: %v\n", err)
 			os.Exit(1)
@@ -87,10 +87,8 @@ var consumeCmd = &cobra.Command{
 				os.Exit(1)
 			}
 
-			for _, log := range log.GetLogs() {
-				_ = m.Marshal(os.Stdout, log)
-				_, _ = os.Stdout.WriteString("\n")
-			}
+			_ = m.Marshal(os.Stdout, log)
+			_, _ = os.Stdout.WriteString("\n")
 		}
 	},
 }
